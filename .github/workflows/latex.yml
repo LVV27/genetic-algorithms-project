@@ -17,11 +17,16 @@ jobs:
         with:
           root_file: |
             r0123456_final.tex
+            r0123456_intermediate.tex
+            r0123456_peer.tex
 
       - name: Create or update latest release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: r0123456_final.pdf
+          files: |
+            r0123456_final.pdf
+            r0123456_intermediate.pdf
+            r0123456_peer.pdf
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
