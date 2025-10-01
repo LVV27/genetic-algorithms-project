@@ -1,0 +1,103 @@
+\documentclass[a4paper,10pt]{article}
+\usepackage[utf8]{inputenc}
+
+\usepackage[english]{babel}
+\usepackage{xcolor}
+\usepackage[compact,small]{titlesec}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsfonts,amsmath,amssymb}
+\usepackage{marginnote}
+\usepackage[top=1.8cm, bottom=1.8cm, outer=1.8cm, inner=1.8cm, heightrounded, marginparwidth=2.5cm, marginparsep=0.5cm]{geometry}
+\usepackage{enumitem}
+\setlist{noitemsep,parsep=2pt}
+\newcommand{\highlight}[1]{\textcolor{kuleuven}{#1}}
+\usepackage{pythonhighlight}
+\usepackage{cleveref}
+\usepackage{graphicx}
+
+\newcommand{\nextyear}{\advance\year by 1 \the\year\advance\year by -1}
+\newcommand{\thisyear}{\the\year}
+\newcommand{\deadlineGroup}{November 7, \thisyear{} at 9:00 CET}
+
+\newcommand{\ReplaceMe}[1]{{\color{blue}#1}}
+\newcommand{\RemoveMe}[1]{{\color{purple}#1}}
+
+\setlength{\parskip}{5pt}
+
+%opening
+\title{\vspace{-2cm}Evolutionary Algorithms: Group report}
+\author{\ReplaceMe{Group Member 1}, \ReplaceMe{Group Member 2}, and \ReplaceMe{Group Member 3}}
+
+\begin{document}
+\fontfamily{ppl}
+\selectfont{}
+
+\maketitle
+
+%%% You can remove the Formal requirements section
+\RemoveMe{
+\section*{Formal requirements}
+
+Please respect the structure of this template. You can remove the instructions in this section from your report. The blue text should be replaced with your discussion. Your report can be \textbf{at most $4$ pages} long. 
+
+It is recommended that you use this \LaTeX{} template, but you are allowed to reproduce it with the same structure in a WYSIWYG-editor. You should replace the blue text with your discussion. The questions we ask in blue are there to help you decide which topics to discuss, rather than an exact list of questions that must be answered.
+
+This report should be uploaded to Toledo by \deadlineGroup. It must be in the \textbf{Portable Document Format} (pdf) and must be named \texttt{r0123456\_intermediate.pdf}, where r0123456 should be replaced with your student number. \textbf{Each group member should hand it in individually on Toledo.}
+}
+
+\section{A basic evolutionary algorithm \hfill(target: $1$ page)} 
+
+\subsection{Representation}
+
+\ReplaceMe{How do you represent the candidate solutions? What is your main motivation to choose this one? What other options did you consider? How did you implement this specifically in Python (e.g., a list, set, numpy array, etc)?}
+
+\subsection{Initialization}
+
+\ReplaceMe{How do you initialize the population? How do you generate random cycles?}
+
+\subsection{Selection operators}
+
+\ReplaceMe{Which selection operators did you consider? If they are not from the slides, describe them. Which one did you implement? Can you motivate why you chose this one? Are there parameters that need to be chosen? What do you think are reasonable parameter values?}
+
+\subsection{Mutation operator}
+
+\ReplaceMe{Which mutation operator(s) did you consider and implement? If they are not from the slides, describe them. Which one did you implement? Why did you choose that one specifically? Do you believe it will introduce sufficient randomness? Can that be controlled with parameters?}
+
+\subsection{Recombination operator}
+
+\ReplaceMe{Which recombination operator(s) did you consider? If they are not from the slides, describe them. Which one did you implement? Why did you choose that one specifically? Explain how you believe that this operator can produce offspring that combine the best features from their parents. How does your operator behave if there is little overlap between the parents? Can your recombination be controlled with parameters; what behavior do they change? Do you use self-adaptivity?}
+
+\subsection{Elimination operators}
+
+\ReplaceMe{Which elimination operators did you consider? If they are not from the slides, describe them. Which one did you implement? Can you motivate why you chose this one? Are there parameters that need to be chosen? What do you think are reasonable parameter values?} 
+
+\subsection{Stopping criterion}
+
+\ReplaceMe{When do you think the evolutionary algorithm should stop? Which stopping criterion did you implement? Did you combine several criteria?}
+
+\section{Implementation generation \hfill(target: $1$ page)}
+
+\subsection{Prompts to generate code}
+\ReplaceMe{How did you approach the code generation: multiple short prompts to generate individual functions, or did you ask for the whole implementation at once? Which was more efficient? Did you seed Copilot with information before asking it to generate code? What information did you give it? Record the prompts that you used to generate the code. Did you apply some postprocessing to the generated code? What did you do?}
+
+\subsection{Prompts to fix errors}
+\ReplaceMe{Was the generated code free of errors? If not, what was wrong? What type of errors were they: misinterpretation, logical, or programming errors? How did you instruct Copilot to fix these errors? Record the prompts. Did you apply some postprocessing? What did you do?}
+
+\subsection{Critical reflection}
+\ReplaceMe{Provide your critical reflection on the process of using Copilot to generate a basic evolutionary algorithm implementation. What were the positive and negative points? Was it more or less efficient than writing code from scratch? Was the debugging more or less efficient using Copilot? Do you think the descriptions you provided in section 1 could be used as effective prompts? Why? Would you recommend the use of Copilot for exercise session 2? Any other critical thoughts?}
+
+
+\section{Numerical experiments \hfill(target: $1$ page)}
+
+\subsection{Chosen parameter values}
+
+\ReplaceMe{What parameters are there to choose in your basic evolutionary algorithm? How did you approach parameter selection for now? Did you experiment a bit with different values? What was the influence of this choice? Which are the parameters that you will use for the experiments below?}
+
+\subsection{Preliminary results}
+
+\ReplaceMe{Run your algorithm on the smallest benchmark problem. Include a convergence graph, by plotting the mean and best objective values in function of the time. How long did your program run until convergence? How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, etc)? What was the best fitness value you found? Do you think this is the global optimum? 
+
+When you solve this problem several times, how much variation do you observe in the best solution? Include an informative plot of this.}
+
+\end{document}
