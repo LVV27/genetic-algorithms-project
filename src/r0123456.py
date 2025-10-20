@@ -52,19 +52,20 @@ class r0123456:
 					child = Individual(tour=np.copy(parent1.tour), alpha=parent1.alpha)
 				
 				mutation(child)
+				# calculate fitness once per individual, so when they are born calculate fitness and i fitness is needed just call individual.fitness effient ;))f
+				child.evaluate(tsp_problem.distance_matrix)
 				offspring.append(child)
 
-			# Mutate population
-			for individual in population:
-				mutation(individual)
+			# why mutate whole population? children already get mutated
+			# # Mutate population
+			# for individual in population:
+			# 	mutation(individual)
 
 			# Elimination
-			population = elimination(tsp_problem, population, offspring, GA_PARAMS["POPULATION_SIZE"]) # (Not super efficient, since overwriting veriable)
-			fitnesses = [fitness(tsp_problem, individual) for individual in population]
-			best_index = int(np.argmin(fitnesses))
-			best_fitness = fitnesses[best_index]
-			best_individual = population[best_index]
-			mean_fitness = np.mean(fitnesses)
+			population = elimination_lambda_plus_mu(population, offspring, GA_PARAMS["POPULATION_SIZE"])
+
+			generation_best = min(population, key=lambda x: x.fitness)
+			generation_mean_fitness = np.mean([ind.fitness for ind in population])
 
 			# print('Iteration: ', iterations, ', mean: ', mean_fitness, ', best: ', best_fitness, ', order: ', best_individual.order)
 			# see generated csv file
@@ -76,7 +77,7 @@ class r0123456:
 			#  - the best objective function value of the population
 			#  - a 1D numpy array in the cycle notation containing the best solution 
 			#    with city numbering starting from 0
-			timeLeft = self.reporter.report(best_fitness, mean_fitness, best_individual.tour)
+			timeLeft = self.reporter.report(generation_mean_fitness, generation_best.fitness, generation_best.tour)
 			if timeLeft < 0:
 				break
 		return 0
@@ -221,8 +222,11 @@ def selection(problem: TravelingSalesmanProblem, population: list[Individual], k
     best = min(candidates, key=lambda ind: fitness(problem, ind)) # Take best (lowest fitness)
     return best
 
-def elimination(problem: TravelingSalesmanProblem, population: list[Individual], offspring: list[Individual], size: int) -> list[Individual]:
-    # (μ + λ) elimination  
+# (μ + λ) elimination  
+def elimination_lambda_plus_mu(population: list[Individual], offspring: list[Individual], population_size: int) -> list[Individual]:
     combined = population + offspring
-    combined.sort(key=lambda ind: fitness(problem, ind)) # Sort on fitness (lowest is best)
-    return combined[:size]
+    for ind in combined:
+        if ind.fitness is None:
+            raise ValueError("All individuals must have fitness evaluated")
+    combined.sort(key=lambda x: x.fitness)
+    return combined[:population_size]
