@@ -3,6 +3,19 @@ import numpy as np
 import random
 import os
 
+# ------------------------------
+# GLOBAL GA PARAMETERS
+# ------------------------------
+GA_PARAMS = {
+    "POPULATION_SIZE": 500,  # λ
+    "OFFSPRING_SIZE": 250,  # μ
+    "GENERATIONS": 1000,
+    "TOURNAMENT_K": 3,
+    "MUTATION_ALPHA_MIN": 0.02,
+    "MUTATION_ALPHA_MAX": 0.12,
+    "CROSSOVER_PROB": 0.8,
+}
+
 # Modify the class name to match your student number.
 class r0123456:
 
@@ -20,23 +33,24 @@ class r0123456:
 
 		tsp_problem = TravelingSalesmanProblem(distance_matrix, filename_only)
 		tsp_problem.print_info()
-		# Your code here.
-		MAX_ITERATIONS = 1000
-		iterations = 0
-		LAMBDA = 100
-		MU = 80
-		K = 3
 
-		# Generate individuals
-		population = initialize(tsp_problem, LAMBDA)
+		# --- Initialize GA ---
+		population = initialize_population(tsp_problem, GA_PARAMS["POPULATION_SIZE"])
+		evaluate_population(population, tsp_problem.distance_matrix)
+		best_overall_individual = min(population, key=lambda x: x.fitness)
 
-		while( iterations < MAX_ITERATIONS ):
+		for gen in range(1, GA_PARAMS["GENERATIONS"] + 1):
 			# Recombinate population and mutate offspring
 			offspring = []
-			for j in range(MU):
-				parent1 = selection(tsp_problem, population, K)
-				parent2 = selection(tsp_problem, population, K)
-				child = recombination(tsp_problem, parent1, parent2)
+			for _ in range(GA_PARAMS["OFFSPRING_SIZE"]):
+				parent1 = selection(tsp_problem, population, GA_PARAMS["TOURNAMENT_K"])
+				parent2 = selection(tsp_problem, population, GA_PARAMS["TOURNAMENT_K"])
+
+				if random.random() < GA_PARAMS["CROSSOVER_PROB"]:
+					child = recombination(tsp_problem, parent1, parent2)
+				else:
+					child = Individual(tour=np.copy(parent1.tour), alpha=parent1.alpha)
+				
 				mutation(child)
 				offspring.append(child)
 
@@ -45,7 +59,7 @@ class r0123456:
 				mutation(individual)
 
 			# Elimination
-			population = elimination(tsp_problem, population, offspring, LAMBDA) # (Not super efficient, since overwriting veriable)
+			population = elimination(tsp_problem, population, offspring, GA_PARAMS["POPULATION_SIZE"]) # (Not super efficient, since overwriting veriable)
 			fitnesses = [fitness(tsp_problem, individual) for individual in population]
 			best_index = int(np.argmin(fitnesses))
 			best_fitness = fitnesses[best_index]
@@ -62,11 +76,9 @@ class r0123456:
 			#  - the best objective function value of the population
 			#  - a 1D numpy array in the cycle notation containing the best solution 
 			#    with city numbering starting from 0
-			timeLeft = self.reporter.report(best_fitness, mean_fitness, best_individual.order)
+			timeLeft = self.reporter.report(best_fitness, mean_fitness, best_individual.tour)
 			if timeLeft < 0:
 				break
-
-			iterations += 1
 		return 0
 
 class TravelingSalesmanProblem:
@@ -101,32 +113,61 @@ class TravelingSalesmanProblem:
 		print("")
 	
 class Individual:
-	def __init__(self, problem: TravelingSalesmanProblem, order: np.ndarray | None = None):#, alpha: float = max(0.01, 0.1 + 0.02 * np.random.randn())):
+	def __init__(self, problem: TravelingSalesmanProblem = None, tour: np.ndarray = None, alpha : float = None):
 		# Represent objects as a permutation
 		# Start with generating a random order of objects
 		# self.alpha = alpha
-		if order is None:
-			self.order = np.random.permutation(problem.num_cities)
-		else: self.order = order 
+		if tour is not None:
+			self.tour = np.array(tour)
+		elif problem is not None:
+			self.tour = np.random.permutation(problem.num_cities)
+		else:
+			raise ValueError("Must provide tsp instance or explicit tour.")
 
+		# not sure about the calculation
+		self.alpha = (
+			max(
+				GA_PARAMS["MUTATION_ALPHA_MIN"],
+				GA_PARAMS["MUTATION_ALPHA_MIN"]
+				+ (GA_PARAMS["MUTATION_ALPHA_MAX"] - GA_PARAMS["MUTATION_ALPHA_MIN"])
+				* random.random(),
+			)
+			if alpha is None
+			else alpha
+		)
+		self.fitness = None
 
-def initialize(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
+	def evaluate(self, distance_matrix: np.ndarray) -> float:
+		self.fitness = sum(
+			distance_matrix[self.tour[i], self.tour[(i + 1) % len(self.tour)]]
+			for i in range(len(self.tour))
+		)
+		return self.fitness
+
+# ------------------------------
+# GA Utilities
+# ------------------------------
+def initialize_population(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
 	population = [Individual(problem) for _ in range(population_size)]
 	return population
 
+def evaluate_population(population: list, distance_matrix: np.ndarray):
+    for ind in population:
+        ind.evaluate(distance_matrix)
+
 def fitness(problem: TravelingSalesmanProblem, individual: Individual) -> float:
     total_distance = 0
-    for i in range(len(individual.order) - 1):
-        total_distance += problem.get_distance(individual.order[i], individual.order[i + 1])
-    total_distance += problem.get_distance(individual.order[-1], individual.order[0])  # Return to start
+    for i in range(len(individual.tour) - 1):
+        total_distance += problem.get_distance(individual.tour[i], individual.tour[i + 1])
+    total_distance += problem.get_distance(individual.tour[-1], individual.tour[0])  # Return to start
     return total_distance
 
 def mutation(individual: Individual):
     # Swap two random elements with self adaptivity parameter
     # if random.random() < individual.alpha:
-	i = random.randint(0, len(individual.order)-1)
-	j = random.randint(0, len(individual.order)-1)
-	individual.order[i], individual.order[j] = individual.order[j], individual.order[i]
+	i = random.randint(0, len(individual.tour)-1)
+	j = random.randint(0, len(individual.tour)-1)
+	individual.tour[i], individual.tour[j] = individual.tour[j], individual.tour[i]
 
 def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
     # Partially mapped crossover (Eiben-Smith, page 70) : 
@@ -154,23 +195,23 @@ def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent
 
     # 1. Copy the segment from parent1 to offspring
     for i in range(cx_point1, cx_point2 + 1):
-        order[i] = parent1.order[i]
+        order[i] = parent1.tour[i]
 
     # 2-5. Map the values from parent2’s segment
     for i in range(cx_point1, cx_point2 + 1):
-        gene = parent2.order[i]
+        gene = parent2.tour[i]
         if gene not in order: # 2. Elements of parent2 not already in offspring
             pos = i
             # 3-5. Follow the mapping from parent1 to parent2 until we find a free spot
             while order[pos] != -1:
-                mapped_gene = parent1.order[pos]
-                pos = int(np.where(parent2.order == mapped_gene)[0][0])
+                mapped_gene = parent1.tour[pos]
+                pos = int(np.where(parent2.tour == mapped_gene)[0][0])
             order[pos] = gene
 
 	# 6. Fill remaining empty positions with parent2’s genes
     for i in range(size):
         if order[i] == -1:
-            order[i] = parent2.order[i]
+            order[i] = parent2.tour[i]
 		
     return Individual(problem, order)
 
