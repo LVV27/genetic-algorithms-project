@@ -43,8 +43,8 @@ class r0123456:
 			# Recombinate population and mutate offspring
 			offspring = []
 			for _ in range(GA_PARAMS["OFFSPRING_SIZE"]):
-				parent1 = selection(tsp_problem, population, GA_PARAMS["TOURNAMENT_K"])
-				parent2 = selection(tsp_problem, population, GA_PARAMS["TOURNAMENT_K"])
+				parent1 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
+				parent2 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
 
 				if random.random() < GA_PARAMS["CROSSOVER_PROB"]:
 					child = recombination(tsp_problem, parent1, parent2)
@@ -156,13 +156,6 @@ def evaluate_population(population: list, distance_matrix: np.ndarray):
     for ind in population:
         ind.evaluate(distance_matrix)
 
-def fitness(problem: TravelingSalesmanProblem, individual: Individual) -> float:
-    total_distance = 0
-    for i in range(len(individual.tour) - 1):
-        total_distance += problem.get_distance(individual.tour[i], individual.tour[i + 1])
-    total_distance += problem.get_distance(individual.tour[-1], individual.tour[0])  # Return to start
-    return total_distance
-
 def mutation(individual: Individual):
     # Swap two random elements with self adaptivity parameter
     # if random.random() < individual.alpha:
@@ -216,11 +209,13 @@ def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent
 		
     return Individual(problem, order)
 
-def selection(problem: TravelingSalesmanProblem, population: list[Individual], k: int) -> Individual:
-    # K-tournament selection
-    candidates = random.sample(population, k) # Take k individuals from population
-    best = min(candidates, key=lambda ind: fitness(problem, ind)) # Take best (lowest fitness)
-    return best
+def tournament_selection(population: list, k: int) -> Individual:
+    competitors = random.sample(population, k)
+    for ind in competitors:
+        if ind.fitness is None:
+            raise ValueError("Individual fitness not evaluated")
+    return min(competitors, key=lambda ind: ind.fitness)
+
 
 # (μ + λ) elimination  
 def elimination_lambda_plus_mu(population: list[Individual], offspring: list[Individual], population_size: int) -> list[Individual]:
