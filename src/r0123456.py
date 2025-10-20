@@ -1,6 +1,7 @@
 import Reporter
 import numpy as np
 import random
+import os
 
 # Modify the class name to match your student number.
 class r0123456:
@@ -8,18 +9,17 @@ class r0123456:
 	def __init__(self):
 		self.reporter = Reporter.Reporter(self.__class__.__name__)
 
-		# Your code here.
-
-	
-
 	# The evolutionary algorithm's main loop
 	def optimize(self, filename):
 		# Read distance matrix from file.		
 		file = open(filename)
-		distanceMatrix = np.loadtxt(file, delimiter=",")
+		distance_matrix = np.loadtxt(file, delimiter=",")
 		file.close()
 
-		problem = TravelingsalesmanProblem(distanceMatrix)
+		filename_only = os.path.basename(filename)
+
+		tsp_problem = TravelingSalesmanProblem(distance_matrix, filename_only)
+		tsp_problem.print_info()
 		# Your code here.
 		MAX_ITERATIONS = 1000
 		iterations = 0
@@ -28,15 +28,15 @@ class r0123456:
 		K = 3
 
 		# Generate individuals
-		population = initialize(problem, LAMBDA)
+		population = initialize(tsp_problem, LAMBDA)
 
 		while( iterations < MAX_ITERATIONS ):
 			# Recombinate population and mutate offspring
 			offspring = []
 			for j in range(MU):
-				parent1 = selection(problem, population, K)
-				parent2 = selection(problem, population, K)
-				child = recombination(problem, parent1, parent2)
+				parent1 = selection(tsp_problem, population, K)
+				parent2 = selection(tsp_problem, population, K)
+				child = recombination(tsp_problem, parent1, parent2)
 				mutation(child)
 				offspring.append(child)
 
@@ -45,14 +45,15 @@ class r0123456:
 				mutation(individual)
 
 			# Elimination
-			population = elimination(problem, population, offspring, LAMBDA) # (Not super efficient, since overwriting veriable)
-			fitnesses = [fitness(problem, individual) for individual in population]
+			population = elimination(tsp_problem, population, offspring, LAMBDA) # (Not super efficient, since overwriting veriable)
+			fitnesses = [fitness(tsp_problem, individual) for individual in population]
 			best_index = int(np.argmin(fitnesses))
 			best_fitness = fitnesses[best_index]
 			best_individual = population[best_index]
 			mean_fitness = np.mean(fitnesses)
 
-			print('Iteration: ', iterations, ', mean: ', mean_fitness, ', best: ', best_fitness, ', order: ', best_individual.order)
+			# print('Iteration: ', iterations, ', mean: ', mean_fitness, ', best: ', best_fitness, ', order: ', best_individual.order)
+			# see generated csv file
 
 			# Your code here.
 
@@ -68,19 +69,39 @@ class r0123456:
 			iterations += 1
 		return 0
 
-class TravelingsalesmanProblem:
-	def __init__(self, distance_matrix: np.ndarray):
+class TravelingSalesmanProblem:
+	def __init__(self, distance_matrix: np.ndarray, filename: str = None):
 		self.distance_matrix = distance_matrix
 		self.num_cities = distance_matrix.shape[0]
+		self.filename = filename
 
 	def get_distance(self, city1: int, city2: int) -> float:
 		return self.distance_matrix[city1, city2]
 
 	def get_num_cities(self) -> int:
 		return self.num_cities
+
+	def print_info(self):
+		"""Print basic problem information and heuristic reference."""
+		print(f"Problem: {self.filename if self.filename else 'Unknown'}")
+		print(f"Number of cities: {self.num_cities}")
+
+		heuristics = {
+			"tour50.csv": 15665,
+			"tour250.csv": 87874,
+			"tour500.csv": 119458,
+			"tour750.csv": 140149,
+			"tour1000.csv": 70468,
+		}
+		heur_val = heuristics.get(self.filename, None)
+		if heur_val is not None:
+			print(f"Simple greedy heuristic objective value: {heur_val}")
+		else:
+			print("Heuristic value: unknown")
+		print("")
 	
 class Individual:
-	def __init__(self, problem: TravelingsalesmanProblem, order: np.ndarray | None = None):#, alpha: float = max(0.01, 0.1 + 0.02 * np.random.randn())):
+	def __init__(self, problem: TravelingSalesmanProblem, order: np.ndarray | None = None):#, alpha: float = max(0.01, 0.1 + 0.02 * np.random.randn())):
 		# Represent objects as a permutation
 		# Start with generating a random order of objects
 		# self.alpha = alpha
@@ -89,11 +110,11 @@ class Individual:
 		else: self.order = order 
 
 
-def initialize(problem: TravelingsalesmanProblem, population_size: int) -> list[Individual]:
+def initialize(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
 	population = [Individual(problem) for _ in range(population_size)]
 	return population
 
-def fitness(problem: TravelingsalesmanProblem, individual: Individual) -> float:
+def fitness(problem: TravelingSalesmanProblem, individual: Individual) -> float:
     total_distance = 0
     for i in range(len(individual.order) - 1):
         total_distance += problem.get_distance(individual.order[i], individual.order[i + 1])
@@ -107,7 +128,7 @@ def mutation(individual: Individual):
 	j = random.randint(0, len(individual.order)-1)
 	individual.order[i], individual.order[j] = individual.order[j], individual.order[i]
 
-def recombination(problem: TravelingsalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
+def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
     # Partially mapped crossover (Eiben-Smith, page 70) : 
 	# 1. Choose two crossover points at random, and copy the segment between
 	# them from the first parent (P1) into the first offspring.
@@ -153,13 +174,13 @@ def recombination(problem: TravelingsalesmanProblem, parent1: Individual, parent
 		
     return Individual(problem, order)
 
-def selection(problem: TravelingsalesmanProblem, population: list[Individual], k: int) -> Individual:
+def selection(problem: TravelingSalesmanProblem, population: list[Individual], k: int) -> Individual:
     # K-tournament selection
     candidates = random.sample(population, k) # Take k individuals from population
     best = min(candidates, key=lambda ind: fitness(problem, ind)) # Take best (lowest fitness)
     return best
 
-def elimination(problem: TravelingsalesmanProblem, population: list[Individual], offspring: list[Individual], size: int) -> list[Individual]:
+def elimination(problem: TravelingSalesmanProblem, population: list[Individual], offspring: list[Individual], size: int) -> list[Individual]:
     # (μ + λ) elimination  
     combined = population + offspring
     combined.sort(key=lambda ind: fitness(problem, ind)) # Sort on fitness (lowest is best)
