@@ -1,8 +1,8 @@
-Copilot coding
-Prompt 1.0: create a genetic algorithm. Generate a representation, the objective function length, a simple population initialization, a selection mechanism, one mutation operator, one recombination operator, an elimination mechanism, and a time-dependent stopping criterion. Make sure to conform to the code template that is provided.
-<r0123456.py is provided>
+#Copilot coding
+#Prompt 1.0: create a genetic algorithm. Generate a representation, the objective function length, a simple population initialization, a selection mechanism, one mutation operator, one recombination operator, an elimination mechanism, and a time-dependent stopping criterion. Make sure to conform to the code template that is provided.
+#<r0123456.py is provided>
 
-Generated code:
+#Generated code:
 import Reporter
 import numpy as np
 import random
@@ -73,8 +73,9 @@ class r0123456:
                 break
 
         return 0
-Prompt 1.1: add more exploration
-Generated code:
+
+#Prompt 1.1: add more exploration
+#Generated code:
 
 import Reporter
 import numpy as np
