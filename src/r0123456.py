@@ -2,7 +2,7 @@ import Reporter
 import numpy as np
 import random
 import os
-
+import statistics
 # ------------------------------
 # GLOBAL GA PARAMETERS
 # ------------------------------
@@ -187,6 +187,32 @@ def tournament_selection(population: list, k: int) -> Individual:
             raise ValueError("Individual fitness not evaluated")
     return min(competitors, key=lambda ind: ind.fitness)
 
+# ------------------------------
+# sigma_scaling_selection
+# ------------------------------
+def sigma_scaling_selection(population: list, c: float = 1.0) -> Individual:
+    # Ensure all individuals have evaluated fitness
+    for ind in population:
+        if ind.fitness is None:
+            raise ValueError("Individual fitness not evaluated")
+
+    fitness_values = [ind.fitness for ind in population]
+    mean_fitness = statistics.mean(fitness_values)
+    std_fitness = statistics.stdev(fitness_values) if len(fitness_values) > 1 else 1e-6  # Avoid division by zero
+
+    # Compute sigma-scaled fitness
+    scaled_fitness = [
+        max(0.0, 1 + (f - mean_fitness) / (c * std_fitness))
+        for f in fitness_values
+    ]
+
+    # Normalize to get selection probabilities
+    total_scaled = sum(scaled_fitness)
+    probabilities = [sf / total_scaled for sf in scaled_fitness]
+
+    # Select one individual based on probabilities
+    selected = random.choices(population, weights=probabilities, k=1)[0]
+    return selected
 
 # ------------------------------
 # Mutation Operator (Swap Mutation)

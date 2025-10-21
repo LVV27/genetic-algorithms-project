@@ -1,7 +1,8 @@
-import r0123456
+import copilot
+
 
 def main():
-    solver = r0123456.r0123456()
+    solver = copilot.rcopilot()
     solver.optimize("benchmark/tour50.csv")
 
 if __name__ == "__main__":
