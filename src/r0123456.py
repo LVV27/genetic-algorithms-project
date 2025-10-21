@@ -148,6 +148,10 @@ class Individual:
 # ------------------------------
 # GA Utilities
 # ------------------------------
+
+# ------------------------------
+# Population Initialization
+# ------------------------------
 def initialize_population(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
 	population = [Individual(problem) for _ in range(population_size)]
 	return population
@@ -156,6 +160,19 @@ def evaluate_population(population: list, distance_matrix: np.ndarray):
     for ind in population:
         ind.evaluate(distance_matrix)
 
+# ------------------------------
+# k-Tournament Selection
+# ------------------------------
+def tournament_selection(population: list, k: int) -> Individual:
+    competitors = random.sample(population, k)
+    for ind in competitors:
+        if ind.fitness is None:
+            raise ValueError("Individual fitness not evaluated")
+    return min(competitors, key=lambda ind: ind.fitness)
+
+# ------------------------------
+# Mutation Operator (Swap Mutation)
+# ------------------------------
 def mutation(individual: Individual):
     # Swap two random elements with self adaptivity parameter
     # if random.random() < individual.alpha:
@@ -163,6 +180,9 @@ def mutation(individual: Individual):
 	j = random.randint(0, len(individual.tour)-1)
 	individual.tour[i], individual.tour[j] = individual.tour[j], individual.tour[i]
 
+# ------------------------------
+# Recombination Operator (Partially Mapped Crossover - PMX)
+# ------------------------------
 def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
     # Partially mapped crossover (Eiben-Smith, page 70) : 
 	# 1. Choose two crossover points at random, and copy the segment between
@@ -209,15 +229,9 @@ def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent
 		
     return Individual(problem, order)
 
-def tournament_selection(population: list, k: int) -> Individual:
-    competitors = random.sample(population, k)
-    for ind in competitors:
-        if ind.fitness is None:
-            raise ValueError("Individual fitness not evaluated")
-    return min(competitors, key=lambda ind: ind.fitness)
-
-
-# (μ + λ) elimination  
+# ------------------------------
+# Elimination / Replacement (λ + μ)
+# ------------------------------
 def elimination_lambda_plus_mu(population: list[Individual], offspring: list[Individual], population_size: int) -> list[Individual]:
     combined = population + offspring
     for ind in combined:
