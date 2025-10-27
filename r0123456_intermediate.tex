@@ -15,6 +15,8 @@
 \usepackage{pythonhighlight}
 \usepackage{cleveref}
 \usepackage{graphicx}
+\usepackage{dialogue}
+\usepackage{float}
 
 \newcommand{\nextyear}{\advance\year by 1 \the\year\advance\year by -1}
 \newcommand{\thisyear}{\the\year}
@@ -87,28 +89,110 @@ TODO
 
 \ReplaceMe{When do you think the evolutionary algorithm should stop? Which stopping criterion did you implement? Did you combine several criteria?}
 TODO
+
+\newpage
 \section{Implementation generation \hfill(target: $1$ page)}
 
 \subsection{Prompts to generate code}
-\ReplaceMe{How did you approach the code generation: multiple short prompts to generate individual functions, or did you ask for the whole implementation at once? Which was more efficient? Did you seed Copilot with information before asking it to generate code? What information did you give it? Record the prompts that you used to generate the code. Did you apply some postprocessing to the generated code? What did you do?}
+%\ReplaceMe{How did you approach the code generation: multiple short prompts to generate individual functions, or did you ask for the whole implementation at once? Which was more efficient? Did you seed Copilot with information before asking it to generate code? What information did you give it? Record the prompts that you used to generate the code. Did you apply some postprocessing to the generated code? What did you do?}
+The core idea during the code generation phase was to decompose the implementation into modular components and prompt the LLM to generate each component individually. Additionally, to improve correctness and maintainability of the generated code, we employed step-by-step (chain-of-thought) prompting over multiple iterations. This strategy resulted in more precise prompts, better controllability, and a clearer structure in the final codebase.
+\\\\
+We first defined the representation of the Traveling Salesman Problem (TSP) ourselves. After that, we generated each component of the evolutionary algorithm by providing the function signature (function name, input specification, and required output). Below is an example of the prompting process used for generating the selection operator:
+
+\begin{dialogue}
+  \speak{Prompt 1}
+    I want to create a selection operator for a genetic algorithm of the Travelings Salesman problem. The representation of the problem is already defined: a (permutation) list that represents the order of the visited cities. Which are the options and what are advantages and disadvantages?
+  \speak{Effect on LLM}
+    This ensures that the LLM “understands” the problem setup and has sufficient context to design a suitable selection operator. At the same time, it provides an overview of candidate approaches and their trade-offs.
+  \speak{Prompt 2}
+    I want you to implement k-tournament selection for a population of individuals in a genetic algorithm for the Travelings Salesman problem. Each individual is represented as a permutation list of cities. The function should take as input a list of individuals and an integer k, representing the number of individuals to select for the tournament. The function should return the selected individual from the tournament. To guide you, I already defined an Individual class that has a fitness attribute. You can use this information, together with the function header below, to implement the k-tournament selection.
+    \begin{python}
+    def tournament_selection(population: List[Individual], k: int) -> Individual:
+    \end{python}
+\end{dialogue}
+
+\noindent
+This multi-step prompting pattern led to code that closely matched our design expectations. Even for more complex operators such as the recombination method (Partially Mapped Crossover, PMX), the same approach proved effective. After receiving the generated code, we manually reviewed and integrated it into the overall project. Minor edits were made when necessary, such as renaming variables for consistency and adding concise clarifying comments.
+%For instance, the refined version of Prompt 2 for recombination is shown below:
+
+%\begin{dialogue}
+%  \speak{Prompt 2}
+%    I want you to implement partially mapped crossover for a population of individuals in a genetic algorithm for the Travelings Salesman problem. Each individual is represented as a permutation list of cities. To guide you, I already defined an Individual class that has a tour attribute, representing the order. You can create a new individual as follows: Individual(problem, order). The TravelingSalesmanProblem class has a $.get\_num\_cities()$ function. You can use this information, together with the function header below, to implement the recombination operator.
+%    \begin{python}
+%    def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual ) -> Individual:
+%    \end{python}
+%\end{dialogue}
+
+%\noindent
+%After receiving the generated code, we manually reviewed and integrated it into the overall project. Minor edits were made when necessary, such as renaming variables for consistency and adding concise clarifying comments.
 
 \subsection{Prompts to fix errors}
-\ReplaceMe{Was the generated code free of errors? If not, what was wrong? What type of errors were they: misinterpretation, logical, or programming errors? How did you instruct Copilot to fix these errors? Record the prompts. Did you apply some postprocessing? What did you do?}
+%\ReplaceMe{Was the generated code free of errors? If not, what was wrong? What type of errors were they: misinterpretation, logical, or programming errors? How did you instruct Copilot to fix these errors? Record the prompts. Did you apply some postprocessing? What did you do?}
+While the generated code was generally functional, several minor corrections were necessary during integration into our codebase. The most notable issue was a misalignment with our predefined data structures: the Individual class internally stores the tour as a \texttt{np.ndarray}, but the LLM initially implemented the order as a standard Python list. This inconsistency caused type mismatches when combining operators and computing distances. To resolve this, we provided a corrective follow-up prompt, asking the LLM to update the previously generated code accordingly:
+
+\begin{dialogue}
+  \speak{Prompt}
+    You implemented the partially mapped crossover operator correctly, without any errors. However, there is a small issue: the order of an individual is implemented as a normal python array, while it should be a numpy array (np.ndarray). Please fix this in the code you generated before.
+\end{dialogue}
+
+\noindent
+After receiving the updated response, we verified that all operators produced consistent data structures and made a few additional adjustments such as renaming variables for readability and refining comments. Overall, postprocessing primarily involved ensuring internal consistency rather than modifying core logic.
 
 \subsection{Critical reflection}
-\ReplaceMe{Provide your critical reflection on the process of using Copilot to generate a basic evolutionary algorithm implementation. What were the positive and negative points? Was it more or less efficient than writing code from scratch? Was the debugging more or less efficient using Copilot? Do you think the descriptions you provided in section 1 could be used as effective prompts? Why? Would you recommend the use of Copilot for exercise session 2? Any other critical thoughts?}
+%\ReplaceMe{Provide your critical reflection on the process of using Copilot to generate a basic evolutionary algorithm implementation. What were the positive and negative points? Was it more or less efficient than writing code from scratch? Was the debugging more or less efficient using Copilot? Do you think the descriptions you provided in section 1 could be used as effective prompts? Why? Would you recommend the use of Copilot for exercise session 2? Any other critical thoughts?}
+Generative AI excels at brainstorming and generating ideas, particularly when domain knowledge is limited. It can help get started quickly and provide a foundational implementation to build upon. However, effective use requires a solid understanding of the problem and underlying concepts, in order to guide the AI and critically evaluate its output. In this sense, prompt engineering becomes as important as traditional coding skills. While LLMs can accelerate the initial coding phase, they may also increase the time needed for reviewing, debugging, and integrating larger blocks of code. Furthermore, the AI does not always self-correct, so careful verification remains necessary. Given the rapid progress of LLMs in recent years, it has however become essential to at least learn how to work with them and understand what to realistically expect from their outputs. Ultimately, the developer's expertise and the trade-off between development speed and code quality determine the most effective way to leverage generative AI in a project. 
 
 
 \section{Numerical experiments \hfill(target: $1$ page)}
 
 \subsection{Chosen parameter values}
 
-\ReplaceMe{What parameters are there to choose in your basic evolutionary algorithm? How did you approach parameter selection for now? Did you experiment a bit with different values? What was the influence of this choice? Which are the parameters that you will use for the experiments below?}
+%\ReplaceMe{What parameters are there to choose in your basic evolutionary algorithm? How did you approach parameter selection for now? Did you experiment a bit with different values? What was the influence of this choice? Which are the parameters that you will use for the experiments below?}
+One systematic approach to selecting parameters is to perform a grid search over a predefined set of values for each parameter. Each combination is tested multiple times under different settings to mitigate the influence of particularly lucky or unlucky runs. For our experiments, we varied the population size, offspring size, mutation rate, crossover rate, and tournament size. The specific values tested are summarized in Table \ref{tab: parameters}.
+\\\\
+Each run was allowed 1000 iterations to reach a solution. For each parameter combination and problem size, we recorded the mean and variance of the best fitness values obtained across repetitions.
 
+\textbf{CHECK THIS AND ADD MORE CONCLUSIONS: We observed that larger population sizes generally led to better performance, but also increased computation time. Higher mutation rates helped maintain diversity in the population, but too high rates could disrupt convergence.}
+
+\noindent
+We settled on the following parameters for our experiments as shown in Table \ref{tab: parameters}.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lc}
+        Parameter & Values \\
+        \hline
+        Population size & 50, \textbf{100}, 200 \\
+        Offspring size & 50, \textbf{100}, 200 \\
+        Mutation rate & 0.01, \textbf{0.05}, 0.1, 0.2 \\
+        Crossover rate & 0.6, \textbf{0.8}, 1.0 \\
+        Tournament size & 3, \textbf{5}, 7 \\
+    \end{tabular}
+    \label{tab: parameters}
+    \caption{Parameters considered for grid search. Chosen values highlighted in bold.}
+\end{table}
 \subsection{Preliminary results}
 
-\ReplaceMe{Run your algorithm on the smallest benchmark problem. Include a convergence graph, by plotting the mean and best objective values in function of the time. How long did your program run until convergence? How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, etc)? What was the best fitness value you found? Do you think this is the global optimum? 
+%\ReplaceMe{Run your algorithm on the smallest benchmark problem. Include a convergence graph, by plotting the mean and best objective values in function of the time. How long did your program run until convergence? How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, etc)? What was the best fitness value you found? Do you think this is the global optimum? When you solve this problem several times, how much variation do you observe in the best solution? Include an informative plot of this.}
+\noindent
+As expected, Figure \ref{fig:convergence} shows that both the mean and best fitness values improve over time, indicating that the evolutionary algorithm is effectively optimizing the TSP solution. The algorithm converged within approximately ... iterations, taking in total ... seconds. This demonstrates a reasonable speed of convergence for this problem size. The fitness value of the best solution found was ..., which is close to the known benchmark of .... However, we cannot guarantee that this is the global optimum due to the NP-hard nature of the TSP. 
 
-When you solve this problem several times, how much variation do you observe in the best solution? Include an informative plot of this.}
+%\begin{figure}[H]
+%    \centering
+%    \includegraphics[width=0.7\textwidth]{convergence_plot.png}
+%    \caption{Convergence graph showing mean and best objective values over time.}
+%    \label{fig:convergence}
+%\end{figure}
+\noindent
+The aspect of diversity of the population throughout the run plays a crucial role. Figure \ref{fig:convergence} illustrates that diversity decreases over time as the population converges towards better solutions. However, it remains above a certain threshold, indicating that the mutation and selection mechanisms are effectively maintaining some level of diversity to avoid premature convergence.
+\\\\
+When running the algorithm multiple times, we observed some variation in the best solution due to the stochastic nature of evolutionary algorithms. The standard deviation of the best fitness values across runs was ..., indicating a moderate level of variability. This suggests that while the algorithm is effective, there is still room for improvement in terms of consistency and robustness. The different scores are shown in Figure \ref{fig:variation}.
+
+%\begin{figure}[H]
+%    \centering
+%    \includegraphics[width=0.7\textwidth]{variation_barchart.png}
+%    \caption{Variation chart showing best fitness values across multiple runs.}
+%    \label{fig:variation}
+%\end{figure}
 
 \end{document}
