@@ -52,43 +52,97 @@ This report should be uploaded to Toledo by \deadlineGroup. It must be in the \t
 
 \subsection{Representation}
 
-\ReplaceMe{How do you represent the candidate solutions? What is your main motivation to choose this one? What other options did you consider? How did you implement this specifically in Python (e.g., a list, set, numpy array, etc)?}
-
-Permutation representation is a natural choice for the TSP problem, as it directly encodes the order in which cities are visited. Each candidate solution is represented as a list of integers, where each integer corresponds to a city index. For example, a candidate solution [0, 2, 1, 3] represents a tour that starts at city 0, then visits city 2, followed by city 1, and finally city 3 before returning to the starting point.
+Permutation representation is a natural choice for the TSP problem, as it directly encodes the order in which cities are visited. 
+Each tour is represented by an array of cities. For example, a candidate solution [0, 2, 1, 3] represents a tour that starts at city 0, then visits city 2, followed by city 1, and finally city 3 before returning to the starting point.
+This format makes it easy to create, modify, and evaluate different
+tours.
+We chose to use NumPy arrays because they store data efficiently and allow fast operations, which is important
+when working with large populations in evolutionary algorithms. Other options, like sets, lists, and maps, were
+considered but had drawbacks. Sets dont keep items in order, so they wouldnt work well for representing tours.
+Maps were more complex than needed since they require key-value pairs, adding unnecessary overhead. Lists
+are similar to arrays but arent as fast in numerical operations as NumPy arrays, which made arrays the better
+choice
 
 \subsection{Initialization}
 
-\ReplaceMe{How do you initialize the population? How do you generate random cycles?}
+The population is initialized by generating random permutations of the city nodes, ensuring that each candidate
+solution represents a feasible tour. In each iteration, a random tour is created by shuffling the list of nodes. After
+generating each tour, the algorithm checks that the total cost of the tour is not infinite. This ensures that all initial
+solutions are valid and avoids routes that can’t be completed due to nodes that are not connected.
 
-The population is initialized by generating random permutations of the list of city indices. This is done using Python's built-in `random.sample` function, which creates a random permutation of the cities without repetition. This way, every individual in the initial population might represent a different tour.
+Practicall, this is done using Python's built-in `random.sample` function, which creates a random permutation of the cities without repetition. 
+This way, every individual in the initial population might represent a different tour.
 
 \subsection{Selection operators}
 
-\ReplaceMe{Which selection operators did you consider? If they are not from the slides, describe them. Which one did you implement? Can you motivate why you chose this one? Are there parameters that need to be chosen? What do you think are reasonable parameter values?}
 
-A good selection operator is k-tournament selection, as it balances exploration and exploitation effectively. In tournament selection, a subset of individuals is randomly chosen from the population, and the best individual from this subset is selected for reproduction. This method helps maintain diversity in the population while still favoring fitter individuals.
+For selection, we used tournament selection, which helps pick good solutions but also keeps some diversity in the population balancing exploration and exploitation effectively.
+In this method, a subset of individuals is randomly chosen from the population, and the one with the best fitness (lowest cost) in that 
+group is selected as a parent for reproduction. This is repeated until we have enough parents for crossover.
+This method helps maintain diversity in the population while still favoring fitter individuals.
+
+\noindent Tournament selection allows stronger solutions to be chosen more often but still gives weaker solutions a chance, which keeps 
+diversity and helps avoid getting stuck in local optima. The main settings for this method are \texttt{TOURNAMENT\_SIZE} and \texttt{SELECTION\_SIZE}. 
+We set \texttt{TOURNAMENT\_SIZE} to 5, which provides a balance by favoring better solutions without being too selective. 
+\texttt{SELECTION\_SIZE} is set to 75, which means we select 75 parents for crossover. 
+This setup keeps a good mix of solutions for each generation and helps the algorithm to converge without losing diversity.
 
 \subsection{Mutation operator}
 
-\ReplaceMe{Which mutation operator(s) did you consider and implement? If they are not from the slides, describe them. Which one did you implement? Why did you choose that one specifically? Do you believe it will introduce sufficient randomness? Can that be controlled with parameters?}
 
-Different types of mutation operators exist for permutation representations, such as swap mutation, insert mutation, inversion mutation and scramble mutation. These different mutation operators can be tested to end up with the best performing one.
+
+For mutation, we implemented a simple swap mutation. 
+This involves selecting two random cities in the tour and swapping them. This small change introduces randomness, which helps the algorithm 
+explore new solutions.
+
+\noindent The mutation rate is controlled by the parameter \texttt{MUTATION\_RATE}, which we set to 0.05. 
+This means each individual has a 5\% chance of mutation. A low mutation rate helps maintain stability in the population by making small changes, 
+but it still allows enough variety to avoid early convergence. This setup helps the algorithm to gradually improve solutions without losing good 
+features in the population.
+
 
 \subsection{Recombination operator}
 
-\ReplaceMe{Which recombination operator(s) did you consider? If they are not from the slides, describe them. Which one did you implement? Why did you choose that one specifically? Explain how you believe that this operator can produce offspring that combine the best features from their parents. How does your operator behave if there is little overlap between the parents? Can your recombination be controlled with parameters; what behavior do they change? Do you use self-adaptivity?}
 
-Different recombination operators exist for permutation representations, such as order crossover (OX), partially matched crossover (PMX), cycle crossover (CX) and edge crossover (EX). These different recombination operators can be tested to end up with the best performing one.
+For recombination, we used "Order Crossover". This method creates offspring by combining parts of two parent tours while preserving the 
+relative order of the cities. In this method, a segment from one parent is copied to the offspring, and then the remaining cities from the other 
+parent are filled in while keeping their original order.
+
+\noindent We chose this method because it is effective for problems where the sequence of entities matters. It ensures that offspring inherits 
+good traits from both parents while still allowing for the exploration of new solutions.
+
+\noindent The crossover is controlled by the \texttt{CROSSOVER\_RATE}, which we set to 0.7. This means there is a 70\% chance that crossover 
+will occur when generating offspring. This rate strikes a balance between exploring new combinations and preserving high-quality solutions, 
+helping the algorithm to converge effectively while maintaining diversity in the population.
 
 \subsection{Elimination operators}
+For elimination, we chose tournament selection again to reduce the population after generating new offspring. 
+After creating the new individuals through crossover and mutation, we combine them with the existing population and then 
+select the best individuals to form the new generation.
 
-\ReplaceMe{Which elimination operators did you consider? If they are not from the slides, describe them. Which one did you implement? Can you motivate why you chose this one? Are there parameters that need to be chosen? What do you think are reasonable parameter values?} 
+\noindent The elimination process involves evaluating the fitness of all individuals in the combined population and then running another 
+tournament selection to pick the fittest candidates based on the \texttt{TOURNAMENT\_SIZE} and  \texttt{POPULATION\_SIZE} parameters. 
+By setting \texttt{POPULATION\_SIZE} to 100, we ensure that only the top 100 individuals are kept for the next generation. 
 
-TODO
+\noindent This method allows the algorithm to build on good solutions while still keeping some diversity, preventing early convergence. 
+By continuously selecting the best individuals, we can effectively drive the evolution of the population toward an optimal solution over time.
+
 \subsection{Stopping criterion}
 
-\ReplaceMe{When do you think the evolutionary algorithm should stop? Which stopping criterion did you implement? Did you combine several criteria?}
-TODO
+
+The algorithm stops running based on two main conditions: a time limit and a check for improvement in the best solution.
+
+\noindent The first condition is the build-in time limit. The algorithm continuously checks how much time is left to run by using the built-in 
+reporter function. When the remaining time is less than zero, the algorithm automatically stops. This keeps the algorithm from running indefinitely 
+and ensures it completes within the allowed time.
+
+\noindent The second condition stops the algorithm if there has been no improvement in the best solution’s cost over a certain number of 
+generations (defined by \texttt{CONVERGENCE\_PATIENCE}). If the best solution doesn’t improve after this many generations, the algorithm assumes 
+it has “converged” and stops, as it is unlikely to find better results by continuing.
+
+\noindent Together, these conditions allow the algorithm to stop either when it reaches a time limit or when it has stabilized at a good solution, 
+thus saving resources while still allowing it to search for an optimal solution.
+
 
 \newpage
 \section{Implementation generation \hfill(target: $1$ page)}
