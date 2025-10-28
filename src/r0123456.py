@@ -1,152 +1,145 @@
-import Reporter
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+import Reporter
+import time 
+from numba import njit
 
-SELECTION_NODES = 10
-MUTATION_AMOUNT = 10
+MAX_GENERATIONS = 100000
+POPULATION_SIZE = 100
+TOURNAMENT_SIZE = 5
+SELECTION_SIZE = 75
+CROSSOVER_RATE = 0.7
+MUTATION_RATE = 0.05
 
-# Modify the class name to match your student number.
+
 class r0123456:
-
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
-        self.all_best_costs = []
-        self.all_mean_costs = []
-        
-    # Helper function to calculate the total cost of a given solution (route)
-    def calculate_total_cost(self, solution, matrix):
-        """Calculates the total cost of a solution cycle."""
-        cost = 0
-        num_nodes = len(solution)
-        for i in range(num_nodes):
-            current_node = solution[i]
-            next_node = solution[(i + 1) % num_nodes] 
-            cost += matrix[current_node, next_node]
-        return cost  
-        
 
-    # The evolutionary algorithm's main loop
     def optimize(self, filename):
-        # Read distance matrix from file.		
-        file = open(filename)
-        distanceMatrix = np.loadtxt(file, delimiter=",")
-        file.close()
-        # Initialize
-        num_nodes = distanceMatrix.shape[0]
-        # Inital random solution
-        current_solution = np.arange(num_nodes)
-        np.random.shuffle(current_solution)
+        # Read distance matrix from file
+        distanceMatrix = np.loadtxt(filename, delimiter=",")
         
-        best_solution = np.copy(current_solution)
-        best_cost = self.calculate_total_cost(current_solution, distanceMatrix)
+        best_cost = float('inf')
+        number_nodes = distanceMatrix.shape[0]
+        population = self.initialize_population(number_nodes)
 
-        timeLeft = self.reporter.allowedTime 
-        iteration = 0
-        # Convergence algorithm
+        generation = 0
+        while generation < MAX_GENERATIONS:
+            generation += 1
 
-        while( timeLeft > 0 ):
-            
-            #1: Calculate node costs
-            node_costs = np.zeros(num_nodes)
-            for i in range(num_nodes):
-                previous_node = current_solution[i-1]
-                current_node = current_solution[i]
-                next_node = current_solution[(i+1) % num_nodes]
-                node_costs[i] = distanceMatrix[previous_node, current_node] + distanceMatrix[current_node, next_node]
-                
-            # 2. Extract inifinite cost nodes
-            infinite_cost_indices = np.where(np.isinf(node_costs))[0]
-            infinite_cost_nodes = current_solution[infinite_cost_indices]
-            selection_nodes = []
-            if len(infinite_cost_nodes) <= SELECTION_NODES:
-                selection_nodes.extend(infinite_cost_nodes)
-            else:
-                selection_nodes.extend(np.random.choice(infinite_cost_nodes, SELECTION_NODES, replace=False))
-            
-            # 3. Fitness selection non infinite cost nodes
-            finite_cost_indices = np.where(~np.isinf(node_costs))[0]
-            nodes_to_select = SELECTION_NODES - len(selection_nodes)
-            if nodes_to_select > 0 and len(finite_cost_indices) > 0:
-                finite_cost_nodes = current_solution[finite_cost_indices]
-                finite_node_costs = node_costs[finite_cost_indices]
-                if nodes_to_select > len(finite_cost_indices):
-                    nodes_to_select = len(finite_cost_indices)
-                total_fitness = np.sum(finite_node_costs)
-                
-                if total_fitness > 0:
-                    probabilities = finite_node_costs / total_fitness
-                    chosen_finite_cost_nodes = np.random.choice(finite_cost_nodes, nodes_to_select, replace=False, p=probabilities)
-                    selection_nodes.extend(chosen_finite_cost_nodes)
-                else:
-                    chosen_finite_cost_nodes = np.random.choice(finite_cost_nodes, nodes_to_select, replace=False)
-                    selection_nodes.extend(chosen_finite_cost_nodes)
-                
-            ### Mutation
-            mutated_solutions = []
-            
-            # 1. Mutate selected nodes
-            indices_selection_nodes = [np.where(current_solution == node)[0][0] for node in selection_nodes]
-            for _ in range(MUTATION_AMOUNT):
-                permutated_nodes = np.random.permutation(selection_nodes)
-                mutation_solution = np.copy(current_solution)
-                for index, value in enumerate(indices_selection_nodes):
-                    mutation_solution[value] = permutated_nodes[index]
-                mutated_solutions.append(mutation_solution)
-            
-            # 2. Include original solution
-            mutated_solutions.append(current_solution)
-            
-            # 3. Calculate cost mutated solution
-            mutation_costs = [self.calculate_total_cost(sol, distanceMatrix) for sol in mutated_solutions]
-            
-   
-            # 4. Choose best mutation best on cost
-            best_mutation_cost = min(mutation_costs)
-            mean_mutation_cost = np.mean(mutation_costs)
-            best_mutation_index = mutation_costs.index(best_mutation_cost)
-            current_solution = mutated_solutions[best_mutation_index]
-            
-            if (best_mutation_cost < best_cost):
-                best_cost = best_mutation_cost
-                best_solution = current_solution
-                print(f"Iter {iteration}: New Best Cost = {best_cost:.2f} (Mean: {mean_mutation_cost:.2f})")
-                
-            self.all_best_costs.append(best_cost)
-            self.all_mean_costs.append(mean_mutation_cost)
-            
-            meanObjective = mean_mutation_cost
-            bestObjective = best_cost
-            
-        
+            # 1. Evaluate the population fitness
+            fitness_scores = [self.calculate_tour_cost(tour, distanceMatrix) for tour in population]  
 
-            timeLeft = self.reporter.report(meanObjective, bestObjective, current_solution)
-            iteration += 1
-            
-        print(f"\nOptimization finished. Final best cost: {best_cost}")
-        
-        # --- Plotting ---
-        self.plot_convergence()
+            # 2. Select parents using tournament selection
+            selected_parents = self.tournament_selection(population, fitness_scores, TOURNAMENT_SIZE, SELECTION_SIZE)  
 
-        # Return the best solution
+            # 3. Generate offspring through crossover and mutation
+            new_population = []
+            for i in range(0, len(selected_parents), 2):
+                
+                parent1 = selected_parents[i]
+                parent2 = selected_parents[i+1] if i+1 < len(selected_parents) else selected_parents[0]
+
+                offspring_1 = parent1
+                offspring_2 = parent2
+
+                # Apply crossover to create offspring
+                if np.random.rand() < CROSSOVER_RATE:
+                    
+                    offspring_1 = self.order_crossover(parent1, parent2)
+                    offspring_2 = self.order_crossover(parent1, parent2)
+                     
+
+                # Apply mutation
+                if np.random.rand() < MUTATION_RATE:
+                    offspring_1 = self.mutate(parent1)
+                    offspring_2 = self.mutate(parent2)
+                    
+
+                new_population.append(offspring_1)
+                new_population.append(offspring_2)
+
+            # 4. Elimination
+            population = self.tournament_selection(new_population, fitness_scores, TOURNAMENT_SIZE, POPULATION_SIZE)
+
+            # 5. Evaluate the new population and find the best solution
+            for tour in population:
+                tour_cost = self.calculate_tour_cost(tour, distanceMatrix)
+                if tour_cost < best_cost:
+                    best_cost = tour_cost
+                    best_solution = tour    
+
+
+            # Call the reporter
+            timeLeft = self.reporter.report(0, best_cost, best_solution)
+            if timeLeft < 0:
+                generation = float('inf')
+
+            print(f"\r Time Left: {round(timeLeft,1)}, Generation: {generation}, Best Cost: {round(best_cost, 2)}", end="")
+
+        print("Done")
         return best_solution
 
-    def plot_convergence(self):
-        """Saves a convergence plot to a PNG file."""
-        try:
-            plt.figure(figsize=(12, 6))
-            plt.plot(self.all_best_costs, label="Best Overall Cost", color='blue', linewidth=2)
-            plt.plot(self.all_mean_costs, label="Mean Mutation Cost per Iteration", color='orange', linestyle='--', alpha=0.8)
-            plt.xlabel("Iteration")
-            plt.ylabel("Cost")
-            plt.title(f"Convergence Plot: {self.reporter.filename.replace('.csv', '')}")
-            plt.legend()
-            plt.grid(True, linestyle=':', alpha=0.6)
-            plt.tight_layout()
-            
-            plot_filename = self.reporter.filename.replace('.csv', '.png')
-            plt.savefig(plot_filename)
-            print(f"Convergence plot saved to {plot_filename}")
-        except Exception as e:
-            print(f"Error generating plot: {e}")
+    def tournament_selection(self, population, fitness_scores, tournament_size, selection_size):
+        selected = []
+        for _ in range(selection_size):
+            tournament_indices = np.random.choice(len(population), tournament_size)
+            tournament_fitness = [fitness_scores[i] for i in tournament_indices]
+            winner_index = tournament_indices[np.argmin(tournament_fitness)]
+            selected.append(population[winner_index])
+        return selected
+
+
+    def mutate(self, solution):
+        i, j = np.random.choice(len(solution), size=2, replace=False)
+        solution[i], solution[j] = solution[j], solution[i]
+        return solution     
+    
+    def calculate_tour_cost(self, tour, distanceMatrix):
+        extended_tour = np.empty(len(tour) + 1, dtype=tour.dtype)
+        extended_tour[:-1] = tour
+        extended_tour[-1] = tour[0]
+        
+        cost = 0.0
+        for i in range(len(extended_tour) - 1):
+            cost += distanceMatrix[extended_tour[i], extended_tour[i + 1]]
+        
+        return cost
+
+    def initialize_population(self, number_nodes):
+        population = []
+        for _ in range(POPULATION_SIZE):
+            solution = np.arange(number_nodes)
+            np.random.shuffle(solution)
+            population.append(solution)
+
+        return population
+    
+    @staticmethod
+    @njit
+    def order_crossover(parent1, parent2):
+        size = len(parent1)
+        child = np.full(size, -1)
+        start, end = sorted(np.random.choice(np.arange(size), 2, replace=False))
+
+        # Copy part of route from parent1 to child
+        child[start:end] = parent1[start:end]
+
+        # Map the nodes from parent2 to the child
+        for i in range(start, end):
+            if parent2[i] not in child:
+                pos = i
+                while child[pos % size] != -1:
+                    pos += 1
+                child[pos % size] = parent2[i]
+
+        # Fill remaining positions with values from parent2
+        for i in range(size):
+            if child[i] == -1:
+                for value in parent2:
+                    if value not in child:
+                        child[i] = value
+                        break
+
+        return child
 
