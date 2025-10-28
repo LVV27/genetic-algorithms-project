@@ -1,5 +1,5 @@
 # Genetic Algorithms Project
-
+WE ARE GROUP 14
 This project implements a Genetic Algorithm (GA) to solve the Traveling Salesman Problem (TSP) using Python.
 
 ## Current Implementation
