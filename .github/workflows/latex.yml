@@ -24,7 +24,8 @@ jobs:
           root_file: |
             r0123456_final.tex
             r0123456_intermediate.tex
-            r0123456_peer.tex
+            r0123456_peer_AI.tex
+            r0123456_peer_human.tex
 
       - name: Create or update latest release
         uses: softprops/action-gh-release@v2
@@ -33,6 +34,7 @@ jobs:
           files: |
             r0123456_final.pdf
             r0123456_intermediate.pdf
-            r0123456_peer.pdf
+            r0123456_peer_AI.pdf
+            r0123456_peer_human.tex
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
