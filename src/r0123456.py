@@ -3,6 +3,7 @@ import numpy as np
 import random
 import os
 import statistics
+
 # ------------------------------
 # GLOBAL GA PARAMETERS
 # ------------------------------
@@ -187,6 +188,7 @@ def tournament_selection(population: list, k: int) -> Individual:
             raise ValueError("Individual fitness not evaluated")
     return min(competitors, key=lambda ind: ind.fitness)
 
+
 # ------------------------------
 # sigma_scaling_selection
 # ------------------------------
@@ -198,12 +200,13 @@ def sigma_scaling_selection(population: list, c: float = 1.0) -> Individual:
 
     fitness_values = [ind.fitness for ind in population]
     mean_fitness = statistics.mean(fitness_values)
-    std_fitness = statistics.stdev(fitness_values) if len(fitness_values) > 1 else 1e-6  # Avoid division by zero
+    std_fitness = (
+        statistics.stdev(fitness_values) if len(fitness_values) > 1 else 1e-6
+    )  # Avoid division by zero
 
     # Compute sigma-scaled fitness
     scaled_fitness = [
-        max(0.0, 1 + (f - mean_fitness) / (c * std_fitness))
-        for f in fitness_values
+        max(0.0, 1 + (f - mean_fitness) / (c * std_fitness)) for f in fitness_values
     ]
 
     # Normalize to get selection probabilities
@@ -213,6 +216,8 @@ def sigma_scaling_selection(population: list, c: float = 1.0) -> Individual:
     # Select one individual based on probabilities
     selected = random.choices(population, weights=probabilities, k=1)[0]
     return selected
+
+
 # ------------------------------
 # ranking selection
 # ------------------------------
@@ -236,6 +241,8 @@ def ranking_selection(population: list) -> Individual:
     # Select one individual based on rank probabilities
     selected = random.choices(sorted_population, weights=probabilities, k=1)[0]
     return selected
+
+
 # ------------------------------
 # ranking selection
 # ------------------------------
@@ -254,10 +261,14 @@ def top_k_selection(population: list, k: int) -> Individual:
     # Randomly select one from the top-k
     selected = random.choice(top_k)
     return selected
+
+
 # ------------------------------
 # round robin selection
 # ------------------------------
-def round_robin_selection(population: list, opponents_per_individual: int) -> Individual:
+def round_robin_selection(
+    population: list, opponents_per_individual: int
+) -> Individual:
     # Ensure all individuals have evaluated fitness
     for ind in population:
         if ind.fitness is None:
@@ -268,8 +279,10 @@ def round_robin_selection(population: list, opponents_per_individual: int) -> In
 
     for i, ind in enumerate(population):
         # Select opponents (excluding the individual itself)
-        opponents = random.sample([x for j, x in enumerate(population) if j != i],
-                                  min(opponents_per_individual, len(population) - 1))
+        opponents = random.sample(
+            [x for j, x in enumerate(population) if j != i],
+            min(opponents_per_individual, len(population) - 1),
+        )
         for opponent in opponents:
             # Assuming minimization: lower fitness is better
             if ind.fitness < opponent.fitness:
@@ -278,6 +291,7 @@ def round_robin_selection(population: list, opponents_per_individual: int) -> In
     # Select the individual with the highest score
     best_individual = max(scores, key=scores.get)
     return best_individual
+
 
 # ------------------------------
 # Mutation Operator (Swap Mutation)
