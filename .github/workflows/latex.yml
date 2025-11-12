@@ -35,6 +35,6 @@ jobs:
             r0123456_final.pdf
             r0123456_intermediate.pdf
             r0123456_peer_AI.pdf
-            r0123456_peer_human.tex
+            r0123456_peer_human.pdf
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
