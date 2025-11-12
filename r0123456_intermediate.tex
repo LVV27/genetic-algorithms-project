@@ -40,7 +40,7 @@
 
 
 
-\section{A basic evolutionary algorithm} 
+\section{A basic evolutionary algorithm}
 
 \subsection{Representation}
 
@@ -78,15 +78,15 @@ The core idea during the code generation phase was to decompose the implementati
 The TSP-representation was defined prior to prompting. After that, each component of the evolutionary algorithm was generated  by providing the function signature (function name, input specification, and required output). Below is an example of the prompting process used for generating the selection operator:
 
 \begin{dialogue}
-  \speak{Prompt 1}
-    I want to create a selection operator for a genetic algorithm for the Travelings Salesman problem. The representation of the problem is already defined: a (permutation) list that represents the order of the visited cities. Which are the options and what are advantages and disadvantages?
-  \speak{Effect on LLM}
-    This ensures that the LLM “understands” the problem setup and has sufficient context to design a suitable selection operator. At the same time, it provides an overview of candidate approaches and their trade-offs.
-  \speak{Prompt 2}
-    I want you to implement k-tournament selection for a population of individuals in a genetic algorithm for the Travelings Salesman problem. Each individual is represented as a permutation list of cities. The function should take as input a list of individuals and an integer k, representing the number of individuals to select for the tournament. The function should return the selected individual from the tournament. To guide you, I already defined an Individual class that has a fitness attribute. You can use this information, together with the function header below, to implement the k-tournament selection.
-    \begin{python}
-    def tournament_selection(population: List[Individual], k: int) -> Individual:
-    \end{python}
+	\speak{Prompt 1}
+	I want to create a selection operator for a genetic algorithm for the Travelings Salesman problem. The representation of the problem is already defined: a (permutation) list that represents the order of the visited cities. Which are the options and what are advantages and disadvantages?
+	\speak{Effect on LLM}
+	This ensures that the LLM “understands” the problem setup and has sufficient context to design a suitable selection operator. At the same time, it provides an overview of candidate approaches and their trade-offs.
+	\speak{Prompt 2}
+	I want you to implement k-tournament selection for a population of individuals in a genetic algorithm for the Travelings Salesman problem. Each individual is represented as a permutation list of cities. The function should take as input a list of individuals and an integer k, representing the number of individuals to select for the tournament. The function should return the selected individual from the tournament. To guide you, I already defined an Individual class that has a fitness attribute. You can use this information, together with the function header below, to implement the k-tournament selection.
+	\begin{python}
+		def tournament_selection(population: List[Individual], k: int) -> Individual:
+	\end{python}
 \end{dialogue}
 
 \noindent
@@ -109,8 +109,8 @@ This multi-step prompting pattern led to code that closely matched the design ex
 While the generated code was generally functional, several minor corrections were necessary during integration into the codebase. The most notable issue was a misalignment with the predefined data structures: the Individual class internally stores the tour as a \texttt{np.ndarray}, but the LLM initially implemented the order as a standard Python list. This inconsistency caused type mismatches when combining operators and computing distances. To resolve this, a corrective follow-up prompt was provided, asking the LLM to update the previously generated code accordingly:
 
 \begin{dialogue}
-  \speak{Prompt}
-    You implemented the partially mapped crossover operator correctly, without any errors. However, there is a small issue: the order of an individual is implemented as a normal python array, while it should be a numpy array (np.ndarray). Please fix this in the code you generated before.
+	\speak{Prompt}
+	You implemented the partially mapped crossover operator correctly, without any errors. However, there is a small issue: the order of an individual is implemented as a normal python array, while it should be a numpy array (np.ndarray). Please fix this in the code you generated before.
 \end{dialogue}
 
 \noindent
@@ -119,7 +119,7 @@ After receiving the updated response, it was verified that all operators produce
 \subsection{Critical reflection}
 
 
-Generative AI excels at brainstorming and generating ideas, particularly when domain knowledge is limited. It can help get started quickly and provide a foundational implementation to build upon. However, effective use requires a solid understanding of the problem and underlying concepts, in order to guide the AI and critically evaluate its output. In this sense, prompt engineering becomes as important as traditional coding skills. While LLMs can accelerate the initial coding phase, they may also increase the time needed for reviewing, debugging, and integrating larger blocks of code. Furthermore, the AI does not always self-correct, so careful verification remains necessary. Given the rapid progress of LLMs in recent years, it has however become essential to at least learn how to work with them and understand what to realistically expect from their outputs. Ultimately, the developer's expertise and the trade-off between development speed and code quality determine the most effective way to leverage generative AI in a project. 
+Generative AI excels at brainstorming and generating ideas, particularly when domain knowledge is limited. It can help get started quickly and provide a foundational implementation to build upon. However, effective use requires a solid understanding of the problem and underlying concepts, in order to guide the AI and critically evaluate its output. In this sense, prompt engineering becomes as important as traditional coding skills. While LLMs can accelerate the initial coding phase, they may also increase the time needed for reviewing, debugging, and integrating larger blocks of code. Furthermore, the AI does not always self-correct, so careful verification remains necessary. Given the rapid progress of LLMs in recent years, it has however become essential to at least learn how to work with them and understand what to realistically expect from their outputs. Ultimately, the developer's expertise and the trade-off between development speed and code quality determine the most effective way to leverage generative AI in a project.
 
 
 \section{Numerical experiments}
@@ -159,21 +159,21 @@ to better performance, they also increased computation time. Higher mutation rat
 % \end{table}
 
 \begin{table}[H]
-    \centering
-    \begin{tabular}{lc}
-        \hline
-        Parameter & Tested values \\
-        \hline
-        Population size & 50, \textbf{100}, 200 \\
-        Offspring size & 50, \textbf{100}, 200 \\
-        Mutation rate $\alpha_\text{max}$ & 0.01, 0.05, 0.1, \textbf{0.12}, 0.2 \\
-        Crossover probability $p_c$ & 0.6, \textbf{0.8}, 1.0 \\
-        Tournament size $k$ & 3, \textbf{5}, 7 \\
-        \hline
-    \end{tabular}
-    \captionsetup{width=0.8\textwidth}
-    \caption{Parameter ranges explored during the grid search. Bold entries indicate the default configuration used in the subsequent experiments.}
-    \label{tab:parameters}
+	\centering
+	\begin{tabular}{lc}
+		\hline
+		Parameter                         & Tested values                       \\
+		\hline
+		Population size                   & 50, \textbf{100}, 200               \\
+		Offspring size                    & 50, \textbf{100}, 200               \\
+		Mutation rate $\alpha_\text{max}$ & 0.01, 0.05, 0.1, \textbf{0.12}, 0.2 \\
+		Crossover probability $p_c$       & 0.6, \textbf{0.8}, 1.0              \\
+		Tournament size $k$               & 3, \textbf{5}, 7                    \\
+		\hline
+	\end{tabular}
+	\captionsetup{width=0.8\textwidth}
+	\caption{Parameter ranges explored during the grid search. Bold entries indicate the default configuration used in the subsequent experiments.}
+	\label{tab:parameters}
 \end{table}
 
 % \subsection{Preliminary results}
@@ -206,37 +206,35 @@ to better performance, they also increased computation time. Higher mutation rat
 Two separate experiments were conducted to evaluate the performance of the evolutionary algorithm.
 
 \noindent
-\textbf{1. Convergence analysis.} 
-We first ran the GA using the selected parameter configuration on the smallest TSP benchmark instance to analyze convergence behavior. Figure~\ref{fig:convergence} shows the evolution of the mean and best fitness values over generations. The algorithm exhibits a rapid improvement during the first 200 iterations, followed by slower convergence toward a stable minimum after approximately 500 generations. Each run took on average around 18 seconds.  
+\textbf{1. Convergence analysis.}
+We first ran the GA using the selected parameter configuration on the smallest TSP benchmark instance to analyze convergence behavior. Figure~\ref{fig:convergence} shows the evolution of the mean and best fitness values over generations. The algorithm exhibits a rapid improvement during the first 200 iterations, followed by slower convergence toward a stable minimum after approximately 500 generations. Each run took on average around 18 seconds.
 
 \noindent
 During these runs, population diversity steadily decreased and often fell to very low levels. This caused premature convergence and early stagnation, visible as plateaus in the fitness curves in Figure~\ref{fig:convergence}. Preserving diversity remains a key challenge to further improve the algorithm’s performance.
 
 \begin{figure}[H]
-    \centering
-    \includegraphics[width=0.7\textwidth]{convergence_plot.png}
-    \caption{Convergence of the mean and best fitness values over generations.}
-    \label{fig:convergence}
+	\centering
+	\includegraphics[width=0.7\textwidth]{assets/convergence_plot.png}
+	\caption{Convergence of the mean and best fitness values over generations.}
+	\label{fig:convergence}
 \end{figure}
 
 \noindent
-\textbf{2. Repeatability study.} 
+\textbf{2. Repeatability study.}
 To evaluate stochastic variability and robustness, the algorithm was executed 100 times under identical settings. Each run recorded the best fitness achieved. Figure~\ref{fig:variation} shows a boxplot of these best fitness values. The red line indicates the median, and the green circle marks the mean. Whiskers show the approximate range of non-outlier values, while points outside the whiskers are considered outliers. Most runs achieved best fitness between approximately 17.500 and 19.500, indicating moderate stochastic variation but generally consistent convergence behavior.
 
 \noindent
 \begin{minipage}{0.4\textwidth}
-Overall, these experiments demonstrate that the selected genetic algorithm configuration is capable of generating feasible solutions with moderate convergence speed and generally repeatable performance. Nevertheless, there remains considerable scope for improvement in surpassing heuristic solutions and approaching the global optimum. Population diversity decreases rapidly, resulting in premature convergence and early stagnation in some runs. The substantial variation in best fitness across the 100 independent executions complicates the identification of clearly optimal parameter settings, indicating that further investigation into parameter tuning and diversity-preserving mechanisms could enhance both solution quality and robustness. Future work may explore more sophisticated mutation operators, alternative selection strategies, local optimization techniques, or hybrid approaches to achieve a better balance between exploration and exploitation within the population.
+	Overall, these experiments demonstrate that the selected genetic algorithm configuration is capable of generating feasible solutions with moderate convergence speed and generally repeatable performance. Nevertheless, there remains considerable scope for improvement in surpassing heuristic solutions and approaching the global optimum. Population diversity decreases rapidly, resulting in premature convergence and early stagnation in some runs. The substantial variation in best fitness across the 100 independent executions complicates the identification of clearly optimal parameter settings, indicating that further investigation into parameter tuning and diversity-preserving mechanisms could enhance both solution quality and robustness. Future work may explore more sophisticated mutation operators, alternative selection strategies, local optimization techniques, or hybrid approaches to achieve a better balance between exploration and exploitation within the population.
 \end{minipage}
 \hfill
 \begin{minipage}{0.55\textwidth}
-    \begin{figure}[H]
-        \centering
-        \includegraphics[width=0.75\textwidth]{variation_boxplot.png}
-        \caption{Boxplot of the best fitness values across 100 independent runs. The box shows the interquartile range, the red line is the median, the green circle indicates the mean. Whiskers represent the approximate range of non-outlier values.}
-        \label{fig:variation}
-    \end{figure}
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.75\textwidth]{assets/variation_boxplot.png}
+		\caption{Boxplot of the best fitness values across 100 independent runs. The box shows the interquartile range, the red line is the median, the green circle indicates the mean. Whiskers represent the approximate range of non-outlier values.}
+		\label{fig:variation}
+	\end{figure}
 \end{minipage}
-
-
 
 \end{document}
