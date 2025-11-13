@@ -210,38 +210,48 @@ def mutation(individual: Individual):
 # ------------------------------
 # Recombination Operator (Partially Mapped Crossover - PMX)
 # ------------------------------
-def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
-    """Generate a child by partially mapping crossover (PMX) between two parents."""
+def recombination(problem, parent1, parent2):
+    """
+    Robust PMX crossover:
+    - copy a random segment from parent1
+    - for each gene in parent2's segment that is not yet in child,
+      find the position to place it by following the mapping via indices
+      in parent2 until a free slot is found.
+    """
     size = problem.get_num_cities()
-    order = np.full(size, -1)
+    p1 = parent1.tour
+    p2 = parent2.tour
 
-    # 1. Choose two random crossover points
-    cx_point1 = random.randint(0, size - 1)
-    cx_point2 = random.randint(0, size - 1)
-    if cx_point1 > cx_point2:
-        cx_point1, cx_point2 = cx_point2, cx_point1
+    child = np.full(size, -1, dtype=int)
 
-    # 1. Copy segment from parent1 to offspring
-    for i in range(cx_point1, cx_point2 + 1):
-        order[i] = parent1.tour[i]
+    # pick two distinct points
+    a, b = sorted(random.sample(range(size), 2))
+    # copy segment from parent1
+    child[a : b + 1] = p1[a : b + 1]
 
-    # 2-5. Map remaining genes from parent2
-    for i in range(cx_point1, cx_point2 + 1):
-        gene = parent2.tour[i]
-        if gene not in order:  # 2. Elements of parent2 not already in offspring
-            pos = i
-            # 3-5. Follow the mapping from parent1 to parent2 until we find a free spot
-            while order[pos] != -1:
-                mapped_gene = parent1.tour[pos]
-                pos = int(np.where(parent2.tour == mapped_gene)[0][0])
-            order[pos] = gene
+    # precompute index of each city in parent2 for O(1) lookup
+    p2_pos = {int(val): idx for idx, val in enumerate(p2)}
 
-    # 6. Fill empty positions with remaining genes from parent2
+    # For each index in crossover segment, place p2 gene if not already present
+    for i in range(a, b + 1):
+        city = int(p2[i])
+        if city in child:
+            continue
+        pos = i
+        # follow mapping until we find a free position in child
+        while child[pos] != -1:
+            # mapped gene from parent1 at same position
+            mapped_gene = int(p1[pos])
+            # find where that mapped_gene sits in parent2
+            pos = p2_pos[mapped_gene]
+        child[pos] = city
+
+    # fill remaining slots from parent2
     for i in range(size):
-        if order[i] == -1:
-            order[i] = parent2.tour[i]
+        if child[i] == -1:
+            child[i] = int(p2[i])
 
-    return Individual(problem, order)
+    return Individual(problem, child)
 
 
 # ------------------------------
