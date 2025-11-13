@@ -19,18 +19,21 @@ GA_PARAMS = {
 
 class TravelingSalesmanProblem:
     def __init__(self, distance_matrix: np.ndarray, filename: str = None):
+        """Store the distance matrix and problem metadata"""
         self.distance_matrix = distance_matrix
         self.num_cities = distance_matrix.shape[0]
         self.filename = filename
 
     def get_distance(self, city1: int, city2: int) -> float:
+        """Return the distance between two cities"""
         return self.distance_matrix[city1, city2]
 
     def get_num_cities(self) -> int:
+        """Return the number of cities in the problem"""
         return self.num_cities
 
     def print_info(self):
-        """Print basic problem information and heuristic reference."""
+        """Print basic information about the TSP problem instance."""
         print(f"Problem: {self.filename if self.filename else 'Unknown'}")
         print(f"Number of cities: {self.num_cities}")
 
@@ -49,13 +52,14 @@ class TravelingSalesmanProblem:
         print("")
 
 
-# Modify the class name to match your student number.
+# TODO Modify the class name to match your student number.
 class r0123456:
     def __init__(self):
+        """Initialize the solver and reporter."""
         self.reporter = Reporter.Reporter(self.__class__.__name__)
 
-    # The evolutionary algorithm's main loop (now short & readable)
     def optimize(self, filename: str) -> int:
+        """Main GA loop: read problem, initialize population, evolve, and report."""
         distance_matrix = self._read_distance_matrix(filename)
         filename_only = os.path.basename(filename)
 
@@ -69,46 +73,33 @@ class r0123456:
         for gen in range(1, GA_PARAMS["GENERATIONS"] + 1):
             offspring = self._generate_offspring(population, tsp_problem)
 
-            # Elimination
-            population = elimination_lambda_plus_mu(
-                population, offspring, GA_PARAMS["POPULATION_SIZE"]
-            )
+            population = elimination_lambda_plus_mu(population, offspring, GA_PARAMS["POPULATION_SIZE"])
 
             generation_best = min(population, key=lambda x: x.fitness)
             generation_mean_fitness = np.mean([ind.fitness for ind in population])
 
-            # Keep track of global best
             if generation_best.fitness < best_overall_individual.fitness:
                 best_overall_individual = generation_best
 
-            # Report and check time left
-            time_left = self._report_and_check(
-                generation_mean_fitness, generation_best
-            )
+            time_left = self._report_and_check(generation_mean_fitness, generation_best)
             if time_left < 0:
                 break
 
         return 0
 
-    # -------------------------
-    # Helper / extracted methods
-    # -------------------------
     def _read_distance_matrix(self, filename: str) -> np.ndarray:
-        """Safely read the CSV distance matrix and return a numpy array."""
+        """Read CSV and return the distance matrix as a numpy array."""
         with open(filename, "r") as f:
             distance_matrix = np.loadtxt(f, delimiter=",")
         return distance_matrix
 
     def _init_population(self, tsp_problem: TravelingSalesmanProblem) -> list:
-        """Initialize and return the population (list of Individuals)."""
+        """Create and return initial population of Individuals."""
         population = initialize_population(tsp_problem, GA_PARAMS["POPULATION_SIZE"])
         return population
 
     def _generate_offspring(self, population: list, tsp_problem: TravelingSalesmanProblem) -> list:
-        """
-        Create offspring using tournament selection, crossover (probabilistic),
-        mutation, and immediate evaluation. Returns list of offspring.
-        """
+        """Generate offspring via tournament selection, crossover, mutation, and evaluation."""
         offspring = []
         for _ in range(GA_PARAMS["OFFSPRING_SIZE"]):
             parent1 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
@@ -125,11 +116,7 @@ class r0123456:
         return offspring
 
     def _report_and_check(self, generation_mean_fitness: float, generation_best: "Individual") -> float:
-        """
-        Call the reporter with (mean, best, best_tour). Return timeLeft (as the
-        reporter returns). Keep this single responsibility so reporting can be
-        changed easily later.
-        """
+        """Report generation stats and return time left from Reporter."""
         return self.reporter.report(
             generation_mean_fitness, generation_best.fitness, generation_best.tour
         )
@@ -137,9 +124,7 @@ class r0123456:
 
 class Individual:
     def __init__(self, problem: TravelingSalesmanProblem = None, tour: np.ndarray = None, alpha: float = None, ):
-        # Represent objects as a permutation
-        # Start with generating a random order of objects
-        # self.alpha = alpha
+        """Initialize an Individual: either a given tour or a random permutation. Set mutation rate alpha."""
         if tour is not None:
             self.tour = np.array(tour)
         elif problem is not None:
@@ -156,11 +141,9 @@ class Individual:
         self.fitness = None
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
+        """Compute and store total tour distance (fitness) using the problem's distance matrix."""
         n = len(self.tour)
-        self.fitness = sum(
-            problem.get_distance(self.tour[i], self.tour[(i + 1) % n])
-            for i in range(n)
-        )
+        self.fitness = sum(problem.get_distance(self.tour[i], self.tour[(i + 1) % n]) for i in range(n))
         return self.fitness
 
 
@@ -173,11 +156,13 @@ class Individual:
 # Population Initialization
 # ------------------------------
 def initialize_population(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
+    """Create a list of Individuals with random tours for the given problem."""
     population = [Individual(problem) for _ in range(population_size)]
     return population
 
 
 def evaluate_population(population: list, problem: TravelingSalesmanProblem):
+    """Evaluate and store fitness for every individual in the population."""
     for ind in population:
         ind.evaluate(problem)
 
@@ -186,6 +171,8 @@ def evaluate_population(population: list, problem: TravelingSalesmanProblem):
 # k-Tournament Selection
 # ------------------------------
 def tournament_selection(population: list, k: int) -> Individual:
+    """Randomly select k individuals and return the one with lowest fitness."""
+    assert 1 <= k <= len(population), "Tournament size k must be between 1 and len(population)"
     competitors = random.sample(population, k)
     for ind in competitors:
         if ind.fitness is None:
@@ -197,6 +184,7 @@ def tournament_selection(population: list, k: int) -> Individual:
 # Mutation Operator (Swap Mutation)
 # ------------------------------
 def mutation(individual: Individual):
+    """With probability alpha, swap two random cities in the tour."""
     if random.random() >= individual.alpha:
         return
 
@@ -210,34 +198,21 @@ def mutation(individual: Individual):
 # Recombination Operator (Partially Mapped Crossover - PMX)
 # ------------------------------
 def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual) -> Individual:
-    # Partially mapped crossover (Eiben-Smith, page 70) :
-    # 1. Choose two crossover points at random, and copy the segment between
-    # them from the first parent (P1) into the first offspring.
-    # 2. Starting from the first crossover point look for elements in that segment
-    # of the second parent (P2) that have not been copied.
-    # 3. For each of these (say i), look in the offspring to see what element (say j)
-    # has been copied in its place from P1.
-    # 4. Place i into the position occupied by j in P2, since we know that we will
-    # not be putting j there (as we already have it in our string).
-    # 5. If the place occupied by j in P2 has already been filled in the offspring by
-    # an element k, put i in the position occupied by k in P2.
-    # 6. Having dealt with the elements from the crossover segment, the remaining
-    # positions in this offspring can be filled from P2, and the second child is
-    # created analogously with the parental roles reversed.
+    """Generate a child by partially mapping crossover (PMX) between two parents."""
     size = problem.get_num_cities()
     order = np.full(size, -1)
 
-    # 1. Randomly select two crossover points
+    # 1. Choose two random crossover points
     cx_point1 = random.randint(0, size - 1)
     cx_point2 = random.randint(0, size - 1)
     if cx_point1 > cx_point2:
         cx_point1, cx_point2 = cx_point2, cx_point1
 
-    # 1. Copy the segment from parent1 to offspring
+    # 1. Copy segment from parent1 to offspring
     for i in range(cx_point1, cx_point2 + 1):
         order[i] = parent1.tour[i]
 
-    # 2-5. Map the values from parent2’s segment
+    # 2-5. Map remaining genes from parent2
     for i in range(cx_point1, cx_point2 + 1):
         gene = parent2.tour[i]
         if gene not in order:  # 2. Elements of parent2 not already in offspring
@@ -248,7 +223,7 @@ def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent
                 pos = int(np.where(parent2.tour == mapped_gene)[0][0])
             order[pos] = gene
 
-    # 6. Fill remaining empty positions with parent2’s genes
+    # 6. Fill empty positions with remaining genes from parent2
     for i in range(size):
         if order[i] == -1:
             order[i] = parent2.tour[i]
@@ -261,9 +236,14 @@ def recombination(problem: TravelingSalesmanProblem, parent1: Individual, parent
 # ------------------------------
 def elimination_lambda_plus_mu(population: list[Individual], offspring: list[Individual], population_size: int) -> list[
     Individual]:
+    """Select the best individuals from combined population and offspring."""
     combined = population + offspring
+
+    # Ensure all fitness values are calculated
     for ind in combined:
         if ind.fitness is None:
             raise ValueError("All individuals must have fitness evaluated")
+
+    # Sort by fitness (lower is better) and keep top `population_size`
     combined.sort(key=lambda x: x.fitness)
     return combined[:population_size]
