@@ -67,7 +67,6 @@ class r0123456:
         tsp_problem.print_info()
 
         population = self._init_population(tsp_problem)
-        evaluate_population(population, tsp_problem)
         best_overall_individual = min(population, key=lambda x: x.fitness)
 
         for gen in range(1, GA_PARAMS["GENERATIONS"] + 1):
@@ -101,7 +100,7 @@ class r0123456:
     def _generate_offspring(self, population: list, tsp_problem: TravelingSalesmanProblem) -> list:
         """Generate offspring via tournament selection, crossover, mutation, and evaluation."""
         offspring = []
-        for _ in range(GA_PARAMS["OFFSPRING_SIZE"]):
+        while len(offspring) < GA_PARAMS["OFFSPRING_SIZE"]:
             parent1 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
             parent2 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
 
@@ -112,7 +111,11 @@ class r0123456:
 
             mutation(child)
             child.evaluate(tsp_problem)
-            offspring.append(child)
+
+            # you can choose to keep only valid children maybe better in recombination
+            if not np.isinf(child.fitness):
+                offspring.append(child)
+            # else: discard invalid child
         return offspring
 
     def _report_and_check(self, generation_mean_fitness: float, generation_best: "Individual") -> float:
@@ -143,7 +146,14 @@ class Individual:
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
         """Compute and store total tour distance (fitness) using the problem's distance matrix."""
         n = len(self.tour)
-        self.fitness = sum(problem.get_distance(self.tour[i], self.tour[(i + 1) % n]) for i in range(n))
+        total_distance = 0.0
+        for i in range(n):
+            d = problem.get_distance(self.tour[i], self.tour[(i + 1) % n])
+            if np.isinf(d):
+                self.fitness = np.inf
+                return self.fitness
+            total_distance += d
+        self.fitness = total_distance
         return self.fitness
 
 
@@ -156,15 +166,18 @@ class Individual:
 # Population Initialization
 # ------------------------------
 def initialize_population(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
-    """Create a list of Individuals with random tours for the given problem."""
-    population = [Individual(problem) for _ in range(population_size)]
+    """Create a list of random valid Individuals (no infinite tour distances)."""
+
+    population = []
+
+    while len(population) < population_size:
+        ind = Individual(problem)
+        fitness = ind.evaluate(problem)
+
+        # Skip invalid tours (infinite total distance)
+        if not np.isinf(fitness):
+            population.append(ind)
     return population
-
-
-def evaluate_population(population: list, problem: TravelingSalesmanProblem):
-    """Evaluate and store fitness for every individual in the population."""
-    for ind in population:
-        ind.evaluate(problem)
 
 
 # ------------------------------
@@ -247,3 +260,7 @@ def elimination_lambda_plus_mu(population: list[Individual], offspring: list[Ind
     # Sort by fitness (lower is better) and keep top `population_size`
     combined.sort(key=lambda x: x.fitness)
     return combined[:population_size]
+
+
+if __name__ == "__main__":
+    print("hello world!")
