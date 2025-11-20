@@ -52,6 +52,12 @@
 \section{One strong aspect}
 
 % \ReplaceMe{Identify one strong aspect of the proposed evolutionary algorithm that should certainly be kept or further strengthened in the final solution. Explain why you believe it is a strong point.}
+%\subsection{Well-Justified Recombination Strategy Using Alternating Segment Crossover}
+
+%A particularly strong aspect of the proposed EA is the choice and justification of the Alternating Segment Crossover. Unlike simpler permutation crossovers, Alternating Segment Crossover preserves longer contiguous subsequences, which is especially relevant for TSP instances where good partial tours tend to be stable building blocks. The report also highlights how the segment-length parameter can modulate the degree of disruption, allowing the operator to adapt between high exploitation and higher exploration regimes depending on the chosen hyperparameter. Additionally, the use of a Hamming-distance threshold to trigger mutation when parents are overly similar is a thoughtful addition that helps counteract premature convergence. Overall, the crossover design is well-motivated and stands out as the most robust and insightful component of the algorithm.
+
+\subsection{Tournament selection}
+Tournament selection is a good choice for parent selection. It is the most commonly used selection method in Genetic Algorithms for the Traveling Salesman Problem because it provides stable and tunable selection pressure while remaining simple to implement. Unlike fitness-proportionate methods, tournament selection is not affected by the small fitness differences typical of TSP instances, since it evaluates individuals only by relative quality. By adjusting the tournament size \textit{k}, the algorithm can balance exploration and exploitation. Small tournaments maintain population diversity, while slightly larger ones help refine high-quality tours. This robustness makes tournament selection work reliably with the permutation-based crossover operators used in TSP, such as OX, PMX, ERX and it scales well to large problem instances.
 
 \section{Two weak aspects} 
 
