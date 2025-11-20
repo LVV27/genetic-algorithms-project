@@ -14,6 +14,8 @@ GA_PARAMS = {
     "MUTATION_ALPHA_MIN": 0.02,
     "MUTATION_ALPHA_MAX": 0.12,
     "CROSSOVER_PROB": 0.8,
+    "GREEDY_SEED_COUNT": 10,  # how many greedy tours to seed into initial population
+    "GREEDY_RESTARTS": 20,  # number of different starts to try when building greedy seeds (best picked)
 }
 
 
@@ -94,7 +96,7 @@ class r0123456:
 
     def _init_population(self, tsp_problem: TravelingSalesmanProblem) -> list:
         """Create and return initial population of Individuals."""
-        population = initialize_population(tsp_problem, GA_PARAMS["POPULATION_SIZE"])
+        population = initialize_population_greedy(tsp_problem, GA_PARAMS["POPULATION_SIZE"])
         return population
 
     def _generate_offspring(self, population: list, tsp_problem: TravelingSalesmanProblem) -> list:
@@ -158,6 +160,39 @@ class Individual:
 
 
 # ------------------------------
+# Greedy nearest-neighbour constructor
+# ------------------------------
+def nearest_neighbor_greedy(problem: TravelingSalesmanProblem, start: int = 0) -> np.ndarray:
+    """
+    Build a tour using the nearest neighbour heuristic starting from `start`.
+    Returns an array of city indices (permutation).
+    """
+    n = problem.get_num_cities()
+    unvisited = set(range(n))
+    tour = [start]
+    unvisited.remove(start)
+    current = start
+
+    while unvisited:
+        # pick nearest reachable city
+        next_city = None
+        best_dist = float("inf")
+        for c in unvisited:
+            d = problem.get_distance(current, c)
+            if d < best_dist:
+                best_dist = d
+                next_city = c
+        # if there is an unreachable city (infinite distance), abort and return None
+        if next_city is None or np.isinf(best_dist):
+            return None
+        tour.append(next_city)
+        unvisited.remove(next_city)
+        current = next_city
+
+    return np.array(tour, dtype=int)
+
+
+# ------------------------------
 # GA Utilities
 # ------------------------------
 
@@ -177,6 +212,68 @@ def initialize_population(problem: TravelingSalesmanProblem, population_size: in
         # Skip invalid tours (infinite total distance)
         if not np.isinf(fitness):
             population.append(ind)
+    return population
+
+
+def initialize_population_greedy(problem: TravelingSalesmanProblem, population_size: int) -> list[Individual]:
+    """
+    Create initial population, seeding with a small number of greedy tours
+    (without 2-opt), then fill with random tours.
+    """
+    population: list[Individual] = []
+
+    # 1) Greedy seeds: try multiple starts and pick the best unique tours
+    greedy_candidates = []
+    greedy_seeds = GA_PARAMS["GREEDY_SEED_COUNT"]  # 10
+    greedy_restarts = GA_PARAMS["GREEDY_RESTARTS"]  # 20
+
+    # sample start cities
+    starts = list(range(problem.get_num_cities()))
+    if greedy_restarts < len(starts):
+        starts = random.sample(starts, greedy_restarts)
+    else:
+        starts = starts[:greedy_restarts]
+
+    for s in starts:
+        tour = nearest_neighbor_greedy(problem, start=s)
+        if tour is None:
+            continue
+        ind = Individual(problem=None, tour=tour)
+        ind.evaluate(problem)
+        if not np.isinf(ind.fitness):
+            greedy_candidates.append(ind)
+
+    # Keep unique tours by fitness + tuple contents
+    seen = set()
+    unique_greedy = []
+    for ind in sorted(greedy_candidates, key=lambda x: x.fitness):
+        key = (int(ind.fitness), tuple(int(x) for x in ind.tour))
+        if key not in seen:
+            unique_greedy.append(ind)
+            seen.add(key)
+        if len(unique_greedy) >= greedy_seeds:
+            break
+
+    # add greedy seeds to population
+    for ind in unique_greedy:
+        population.append(ind)
+
+    # 2) Fill remaining population with random valid individuals
+    attempts = 0
+    max_attempts = population_size * 10
+    while len(population) < population_size and attempts < max_attempts:
+        ind = Individual(problem)
+        fitness = ind.evaluate(problem)
+        if not np.isinf(fitness):
+            population.append(ind)
+        attempts += 1
+
+    if len(population) < population_size:
+        raise RuntimeError(
+            f"Could not build full population (got {len(population)} of {population_size}). "
+            "Check graph connectivity or increase max_attempts."
+        )
+
     return population
 
 
@@ -227,7 +324,7 @@ def recombination(problem, parent1, parent2):
     # pick two distinct points
     a, b = sorted(random.sample(range(size), 2))
     # copy segment from parent1
-    child[a : b + 1] = p1[a : b + 1]
+    child[a: b + 1] = p1[a: b + 1]
 
     # precompute index of each city in parent2 for O(1) lookup
     p2_pos = {int(val): idx for idx, val in enumerate(p2)}
