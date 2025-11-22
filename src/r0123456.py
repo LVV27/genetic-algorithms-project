@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 # GLOBAL GA PARAMETERS
 # ------------------------------
 GA_PARAMS = {
-    "POPULATION_SIZE": 500,  # λ
-    "OFFSPRING_SIZE": 250,  # μ
+    "POPULATION_SIZE": 200,  # λ
+    "OFFSPRING_SIZE": 200,  # μ
     "GENERATIONS": 1000,
     "TOURNAMENT_K": 3,
     "MUTATION_ALPHA_MIN": 0.02,
     "MUTATION_ALPHA_MAX": 0.12,
     "CROSSOVER_PROB": 0.8,
-    "GREEDY_SEED_COUNT": 10,
-    "GREEDY_RESTARTS": 20,
+    "GREEDY_SEED_COUNT": 100,
+    "GREEDY_RESTARTS": 50,
 }
 
 
@@ -186,7 +186,7 @@ def initialize_population_greedy(problem: TravelingSalesmanProblem, population_s
     population.extend(unique_greedy)
 
     attempts = 0
-    max_attempts = population_size * 10
+    max_attempts = population_size * 100
 
     while len(population) < population_size and attempts < max_attempts:
         ind = Individual(problem)
@@ -195,7 +195,15 @@ def initialize_population_greedy(problem: TravelingSalesmanProblem, population_s
         attempts += 1
 
     if len(population) < population_size:
-        raise RuntimeError("Could not initialize full population.")
+        logger.warning(
+            f"Could not initialize full population: only {len(population)} / {population_size} "
+            f"individuals generated after {attempts} attempts"
+        )
+    else:
+        logger.info(
+            f"Population initialization finished: {len(population)} / {population_size} individuals "
+            f"after {attempts} attempts"
+        )
 
     return population
 

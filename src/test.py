@@ -1,8 +1,17 @@
 import r0123456
 
+
 def main():
     solver = r0123456.r0123456()
-    solver.optimize("benchmark/tour50.csv")
+
+    # Available benchmark options:
+    # "tour50.csv"
+    # "tour250.csv"
+    # "tour500.csv"
+    # "tour750.csv"
+    # "tour1000.csv"
+    solver.optimize("benchmark/tour250.csv")
+
 
 if __name__ == "__main__":
     main()
