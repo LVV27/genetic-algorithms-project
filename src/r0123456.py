@@ -21,7 +21,7 @@ GA_PARAMS = {
     "GENERATIONS": 1000,
     "TOURNAMENT_K": 3,
     "MUTATION_ALPHA_MIN": 0.02,
-    "MUTATION_ALPHA_MAX": 0.12,
+    "MUTATION_ALPHA_MAX": 0.2,
     "CROSSOVER_PROB": 0.8,
     "GREEDY_SEED_COUNT": 100,
     "GREEDY_RESTARTS": 50,
@@ -83,10 +83,7 @@ class Individual:
 
         # Mutation rate simplified using uniform distribution
         if mutation_rate is None:
-            self.mutation_rate = random.uniform(
-                GA_PARAMS["MUTATION_ALPHA_MIN"],
-                GA_PARAMS["MUTATION_ALPHA_MAX"],
-            )
+            self.mutation_rate = random.uniform(GA_PARAMS["MUTATION_ALPHA_MIN"], GA_PARAMS["MUTATION_ALPHA_MAX"])
         else:
             self.mutation_rate = mutation_rate
 
@@ -222,8 +219,51 @@ def mutation(individual: Individual):
         return
 
     n = len(individual.tour)
-    i, j = random.sample(range(n), 2)
-    individual.tour[i], individual.tour[j] = individual.tour[j], individual.tour[i]
+
+    operator_probs = {
+        "swap": 0.2,
+        "inversion": 0.4,
+        "scramble": 0.2,
+        "insertion": 0.2
+    }
+
+    strategy = random.choices(
+        list(operator_probs.keys()),
+        weights=list(operator_probs.values()),
+        k=1
+    )[0]
+
+    # SWAP
+    if strategy == "swap":
+        i, j = random.sample(range(n), 2)
+        individual.tour[i], individual.tour[j] = individual.tour[j], individual.tour[i]
+
+    # INVERSION
+    elif strategy == "inversion":
+        i, j = sorted(random.sample(range(n), 2))
+        segment = individual.tour[i:j + 1]
+        individual.tour[i:j + 1] = segment[::-1]
+
+    # SCRAMBLE
+    elif strategy == "scramble":
+        i, j = sorted(random.sample(range(n), 2))
+        segment = individual.tour[i:j + 1]
+        random.shuffle(segment)
+        individual.tour[i:j + 1] = segment
+
+    # INSERTION
+    elif strategy == "insertion":
+        i, j = random.sample(range(n), 2)
+        gene = individual.tour[i]
+
+        if i < j:
+            individual.tour = np.concatenate(
+                (individual.tour[:i], individual.tour[i + 1:j + 1], [gene], individual.tour[j + 1:])
+            )
+        else:
+            individual.tour = np.concatenate(
+                (individual.tour[:j], [gene], individual.tour[j:i], individual.tour[i + 1:])
+            )
 
 
 def recombination(problem: TravelingSalesmanProblem, p1: Individual, p2: Individual) -> Individual:
@@ -306,7 +346,7 @@ class r0123456:
 
         for gen in range(1, GA_PARAMS["GENERATIONS"] + 1):
 
-            offspring = self._evolve_one_generation(population, tsp)
+            offspring = self._evolve_one_generation(population, tsp, gen)
 
             population = elimination_lambda_plus_mu(
                 population, offspring, GA_PARAMS["POPULATION_SIZE"]
@@ -349,9 +389,13 @@ class r0123456:
         return initialize_population_greedy(tsp, GA_PARAMS["POPULATION_SIZE"])
 
     def _evolve_one_generation(
-            self, population: List[Individual], tsp: TravelingSalesmanProblem
+            self, population: List[Individual], tsp: TravelingSalesmanProblem, generation: int
     ) -> List[Individual]:
         offspring: List[Individual] = []
+
+        # Only update adaptive mutation every 5 generations
+        if generation % 5 == 0:
+            diversity = population_diversity(population)
 
         while len(offspring) < GA_PARAMS["OFFSPRING_SIZE"]:
             p1 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
@@ -361,6 +405,10 @@ class r0123456:
                 child = recombination(tsp, p1, p2)
             else:
                 child = Individual(tour=np.copy(p1.tour), mutation_rate=p1.mutation_rate)
+
+            # Use the most recently computed diversity
+            if generation % 5 == 0:
+                adaptive_mutation_rate(child, diversity)
 
             mutation(child)
             child.evaluate(tsp)
@@ -376,6 +424,38 @@ class r0123456:
         return self.reporter.report(
             generation_mean_fitness, generation_best.fitness, generation_best.tour
         )
+
+
+def adaptive_mutation_by_fitness(individual: Individual, population: List[Individual]):
+    best = min(population, key=lambda x: x.fitness).fitness
+    worst = max(population, key=lambda x: x.fitness).fitness
+
+    # Normalize fitness in [0,1] (0=best, 1=worst)
+    norm_fitness = (individual.fitness - best) / (worst - best + 1e-8)
+
+    individual.mutation_rate = GA_PARAMS["MUTATION_ALPHA_MIN"] + norm_fitness * (
+            GA_PARAMS["MUTATION_ALPHA_MAX"] - GA_PARAMS["MUTATION_ALPHA_MIN"])
+
+
+def adaptive_mutation_rate(individual: Individual, diversity: float):
+    """
+    Adjust mutation_rate based on diversity:
+    - Low diversity → increase mutation rate
+    - High diversity → keep low mutation rate
+    """
+    base_rate = (GA_PARAMS["MUTATION_ALPHA_MIN"] + GA_PARAMS["MUTATION_ALPHA_MAX"]) / 2
+    # Less diversity → higher mutation rate
+    individual.mutation_rate = base_rate + (1 - diversity) * (GA_PARAMS["MUTATION_ALPHA_MAX"] - base_rate)
+
+
+def population_diversity(population: List[Individual]) -> float:
+    """
+    Returns a value in [0,1] indicating population diversity.
+    1 = highly diverse, 0 = all individuals are similar.
+    """
+    tours = [tuple(ind.tour) for ind in population]
+    unique_tours = len(set(tours))
+    return unique_tours / len(population)
 
 
 if __name__ == "__main__":
