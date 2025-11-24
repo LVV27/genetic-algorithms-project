@@ -19,11 +19,11 @@ GA_PARAMS = {
     "POPULATION_SIZE": 200,  # λ
     "OFFSPRING_SIZE": 200,  # μ
     "GENERATIONS": 1000,
-    "TOURNAMENT_K": 3,
+    "TOURNAMENT_K": 2,
     "MUTATION_ALPHA_MIN": 0.02,
     "MUTATION_ALPHA_MAX": 0.2,
     "CROSSOVER_PROB": 0.8,
-    "GREEDY_SEED_COUNT": 100,
+    "GREEDY_SEED_COUNT": 5,
     "GREEDY_RESTARTS": 50,
 }
 
@@ -334,7 +334,7 @@ class r0123456:
         logger.info("Initial population:")
         logger.info(f"  Mean fitness = {init_mean:.2f}")
         logger.info(f"  Best fitness = {init_best:.2f}")
-        logger.info(f"  Worst fitness = {init_worst:.2f}")
+        logger.info(f"  Worst fitness = {init_worst:.2f}\n")
 
         best_overall = min(population, key=lambda x: x.fitness)
 
@@ -445,7 +445,7 @@ def adaptive_mutation_rate(individual: Individual, diversity: float):
     """
     base_rate = (GA_PARAMS["MUTATION_ALPHA_MIN"] + GA_PARAMS["MUTATION_ALPHA_MAX"]) / 2
     # Less diversity → higher mutation rate
-    individual.mutation_rate = base_rate + (1 - diversity) * (GA_PARAMS["MUTATION_ALPHA_MAX"] - base_rate)
+    individual.mutation_rate = min(1.0, base_rate + (1 - diversity) * 0.8)
 
 
 def population_diversity(population: List[Individual]) -> float:
