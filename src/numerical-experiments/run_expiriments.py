@@ -70,10 +70,10 @@ def run_multiple_experiments(runs=10):
 
         # Configure output for this run
         run_csv = os.path.join(OUTPUT_DIR, f"r0123456_run_{i}")
-        #solver.reporter = r0123456.Reporter.Reporter(run_csv)
+        solver.reporter = r0123456.Reporter.Reporter(run_csv)
 
         # Run optimization
-        #solver.optimize(BENCHMARK_FILE)
+        solver.optimize(BENCHMARK_FILE)
 
         # Store path for analysis (Reporter adds .csv extension)
         csv_files.append(run_csv + ".csv")
