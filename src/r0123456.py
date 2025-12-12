@@ -1,4 +1,4 @@
-import Reporter
+from . import Reporter
 import numpy as np
 import random
 import os
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 GA_PARAMS = {
     "POPULATION_SIZE": 200,  # λ
     "OFFSPRING_SIZE": 200,  # μ
-    "GENERATIONS": 1000,
+    "GENERATIONS": 200,
     "TOURNAMENT_K": 2,
     "MUTATION_ALPHA_MIN": 0.02,
     "MUTATION_ALPHA_MAX": 0.2,
