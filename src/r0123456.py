@@ -46,7 +46,7 @@ GA_PARAMS = {
     # Population parameters
     "POPULATION_SIZE": 50,  # λ (number of individuals in population)
     "OFFSPRING_SIZE": 50,  # μ (number of offspring per generation)
-    "GENERATIONS": 200,  # Maximum number of generations
+    "GENERATIONS": 10000,  # Maximum number of generations
     # Selection parameters
     "TOURNAMENT_K": 2,  # Tournament size for selection
     # Mutation parameters
@@ -64,6 +64,10 @@ GA_PARAMS = {
     # Diversity promotion parameters
     "USE_CROWDING": True,  # Enable deterministic crowding
     "DIVERSITY_PRESERVATION": 0.2,  # Keep 20% of population for diversity
+    "LSO_APPLY_IF_BEATS_PARENT": True,
+    "LSO_NEAR_BEST_FRAC": 0.01,  # apply if child <= (1+5%) * best_in_population
+    "LSO_ALWAYS_IMPROVE_TOP_K": 5,  # always 2-opt top-K offspring by fitness
+    "LSO_LOG_COUNTS": False,
 }
 
 
@@ -314,16 +318,35 @@ def initialize_population_greedy_sparse_aware(
 ) -> List[Individual]:
     """
     Initialize population for sparse matrices - allows incomplete populations.
+
+    SIMPLE CHANGE:
+    - If feasibility-based sparsity says random tours are basically impossible,
+      rely almost entirely on greedy restarts instead of random permutations.
     """
-    population = []
-    greedy_candidates = []
+    population: List[Individual] = []
+    greedy_candidates: List[Individual] = []
+
+    # --- decide whether random tours are feasible ---
+    n = problem.get_num_cities()
+    dm = problem.distance_matrix
+    off = ~np.eye(n, dtype=bool)
+    sparsity = float(np.isinf(dm[off]).sum()) / float(n * (n - 1))
+    p_valid_random_tour = (1.0 - sparsity) ** n
+
+    random_tours_feasible = p_valid_random_tour >= 1e-6  # same as detector
+
     greedy_seeds = GA_PARAMS["GREEDY_SEED_COUNT"]
     greedy_restarts = GA_PARAMS["GREEDY_RESTARTS"]
 
-    # Generate greedy tours from random starting cities
-    start_cities = random.sample(
-        range(problem.get_num_cities()), min(problem.get_num_cities(), greedy_restarts)
-    )
+    # If random tours are not feasible, increase greedy restarts (simple + effective)
+    if not random_tours_feasible:
+        greedy_restarts = max(
+            greedy_restarts, population_size * 40
+        )  # e.g. 2000 for pop=50
+        greedy_seeds = max(greedy_seeds, min(population_size, 20))
+
+    # Generate greedy tours from many starting cities
+    start_cities = random.sample(range(n), min(n, greedy_restarts))
 
     for start in start_cities:
         tour = nearest_neighbor_greedy(problem, start)
@@ -336,7 +359,7 @@ def initialize_population_greedy_sparse_aware(
 
     # Select best unique greedy solutions
     seen_tours = set()
-    unique_greedy = []
+    unique_greedy: List[Individual] = []
 
     for individual in sorted(greedy_candidates, key=lambda x: x.fitness):
         tour_key = (int(individual.fitness), tuple(individual.tour))
@@ -348,15 +371,27 @@ def initialize_population_greedy_sparse_aware(
 
     population.extend(unique_greedy)
 
-    # Fill remainder with random individuals (with limit)
-    attempts = 0
-    max_attempts = population_size * 200
+    # Fill remainder
+    # - If random tours are feasible: try random permutations
+    # - If not: just clone greedy tours (still keeps GA running)
+    if random_tours_feasible:
+        attempts = 0
+        max_attempts = population_size * 10000
 
-    while len(population) < population_size and attempts < max_attempts:
-        individual = Individual(problem)
-        if not np.isinf(individual.evaluate(problem)):
-            population.append(individual)
-        attempts += 1
+        while len(population) < population_size and attempts < max_attempts:
+            individual = Individual(problem)
+            if not np.isinf(individual.evaluate(problem)):
+                population.append(individual)
+            attempts += 1
+    else:
+        # No feasible way to get random tours; clone from existing valid tours
+        while len(population) < population_size and len(population) > 0:
+            template = random.choice(population)
+            clone = Individual(
+                tour=np.copy(template.tour), mutation_rate=template.mutation_rate
+            )
+            clone.fitness = template.fitness
+            population.append(clone)
 
     # Allow small populations for very sparse matrices
     min_population = max(3, population_size // 10)
@@ -375,7 +410,7 @@ def initialize_population_greedy_sparse_aware(
     else:
         logger.info(
             f"  Initialized {len(population)} individuals "
-            f"({len(unique_greedy)} greedy, {len(population) - len(unique_greedy)} random)"
+            f"({len(unique_greedy)} greedy, {len(population) - len(unique_greedy)} random/clone)"
         )
 
     return population
@@ -555,39 +590,26 @@ def recombination(
     Returns:
         New offspring individual
     """
-    size = problem.get_num_cities()
-    tour1, tour2 = parent1.tour, parent2.tour
-    child_tour = np.full(size, -1, dtype=int)
+    n = problem.get_num_cities()
+    a, b = sorted(random.sample(range(n), 2))
+    child = np.full(n, -1, dtype=int)
 
-    # Copy a random segment from parent1
-    segment_start, segment_end = sorted(random.sample(range(size), 2))
-    child_tour[segment_start : segment_end + 1] = tour1[segment_start : segment_end + 1]
+    child[a : b + 1] = parent1.tour[a : b + 1]
+    used = set(int(x) for x in child[a : b + 1])
 
-    # Build lookup for parent2 positions
-    tour2_positions = {int(city): idx for idx, city in enumerate(tour2)}
-    cities_in_child = set(child_tour[segment_start : segment_end + 1])
+    fill = []
+    for city in parent2.tour:
+        c = int(city)
+        if c not in used:
+            fill.append(c)
 
-    # Map remaining cities from parent2
-    for i in range(segment_start, segment_end + 1):
-        city = int(tour2[i])
-        if city in cities_in_child:
-            continue
+    idx = 0
+    for i in range(n):
+        if child[i] == -1:
+            child[i] = fill[idx]
+            idx += 1
 
-        # Find position for this city
-        position = i
-        while child_tour[position] != -1:
-            mapped_city = int(tour1[position])
-            position = tour2_positions[mapped_city]
-
-        child_tour[position] = city
-        cities_in_child.add(city)
-
-    # Fill remaining positions from parent2
-    for i in range(size):
-        if child_tour[i] == -1:
-            child_tour[i] = int(tour2[i])
-
-    return Individual(problem, child_tour, mutation_rate=parent1.mutation_rate)
+    return Individual(problem, child, mutation_rate=parent1.mutation_rate)
 
 
 def crossover_sparse_aware(
@@ -788,28 +810,55 @@ def two_opt_local_search(
     return individual
 
 
-def apply_two_opt_to_offspring(
-    offspring: list[Individual], problem: TravelingSalesmanProblem, max_iters: int = 2
+def apply_two_opt_to_offspring_when_it_matters(
+    offspring: list[Individual],
+    problem: TravelingSalesmanProblem,
+    max_iters: int = 2,
+    pop_best_fitness: float | None = None,
+    best_overall_fitness: float | None = None,
 ) -> None:
-    """
-    Apply 2-opt selectively based on problem size.
-    """
     if not offspring:
         return
 
-    n = problem.get_num_cities()
-    total = len(offspring)
+    offspring.sort(key=lambda x: x.fitness)
 
-    # For large instances, only improve best offspring
-    if n >= 500:
-        offspring.sort(key=lambda x: x.fitness)
-        to_improve = max(1, total // 4)  # Top 25%, minimum 1
-        subset = offspring[:to_improve]
-    else:
-        subset = offspring
+    k = int(GA_PARAMS.get("LSO_ALWAYS_IMPROVE_TOP_K", 5))
+    selected = set(id(ind) for ind in offspring[: max(0, k)])
 
-    for ind in subset:
-        two_opt_local_search(ind, problem, max_iters=max_iters)
+    near_frac = float(GA_PARAMS.get("LSO_NEAR_BEST_FRAC", 0.01))
+    thresholds = []
+    if pop_best_fitness is not None and np.isfinite(pop_best_fitness):
+        thresholds.append(pop_best_fitness * (1.0 + near_frac))
+    if best_overall_fitness is not None and np.isfinite(best_overall_fitness):
+        thresholds.append(best_overall_fitness * (1.0 + near_frac))
+    thr = min(thresholds) if thresholds else None
+
+    for ind in offspring:
+        if id(ind) in selected:
+            continue
+
+        p1 = getattr(ind, "_p1_fitness", None)
+        p2 = getattr(ind, "_p2_fitness", None)
+
+        beats_any_parent = False
+        if (
+            GA_PARAMS.get("LSO_APPLY_IF_BEATS_ANY_PARENT", True)
+            and p1 is not None
+            and p2 is not None
+        ):
+            beats_any_parent = (ind.fitness + 1e-9) < max(p1, p2)
+
+        near_best = thr is not None and ind.fitness <= thr
+
+        if beats_any_parent or near_best:
+            selected.add(id(ind))
+
+    if GA_PARAMS.get("LSO_LOG_COUNTS", True):
+        logger.info(f"  LSO: 2-opt on {len(selected)}/{len(offspring)} offspring")
+
+    for ind in offspring:
+        if id(ind) in selected:
+            two_opt_local_search(ind, problem, max_iters=max_iters)
 
 
 # ==============================================================
@@ -817,7 +866,7 @@ def apply_two_opt_to_offspring(
 # ==============================================================
 
 
-def is_sparse_matrix(distance_matrix: np.ndarray, threshold: float = 0.3) -> bool:
+def is_sparse_matrix(distance_matrix: np.ndarray, threshold: float = 0.1) -> bool:
     """
     Detect if distance matrix is sparse (many infinite/missing edges).
     FIXED: Only counts off-diagonal infinite values.
@@ -864,6 +913,9 @@ class r0123456:
 
         # Track best solution
         best_overall = min(population, key=lambda x: x.fitness)
+        best_overall_fitness = best_overall.fitness
+        last_improve_gen = 0
+        stall_gens = 0
 
         # Main evolution loop
         print_section("EVOLUTION")
@@ -884,26 +936,43 @@ class r0123456:
                     population, offspring, GA_PARAMS["POPULATION_SIZE"]
                 )
 
-            # Track best
             generation_best = min(population, key=lambda x: x.fitness)
-            if generation_best.fitness < best_overall.fitness:
-                best_overall = generation_best
 
-            # Track statistics
+            # --- improvement / stall tracking ---
+            if generation_best.fitness < best_overall_fitness - 1e-9:
+                best_overall = generation_best
+                best_overall_fitness = generation_best.fitness
+                last_improve_gen = generation
+                stall_gens = 0
+            else:
+                stall_gens += 1
+
             generation_mean = float(np.mean([ind.fitness for ind in population]))
 
             # Log diversity periodically
-            if generation % 50 == 0:
+            if generation % 10 == 0:
                 elapsed = time.perf_counter() - checkpoint_time
                 checkpoint_time = time.perf_counter()
                 diversity = population_diversity(population)
 
+                # Fixed-width, consistent columns
                 logger.info(
-                    f"  Gen {generation:3d}  │  Mean: {generation_mean:>9.2f}  │  "
-                    f"Best: {generation_best.fitness:>9.2f}  │  Div: {diversity:.2%}  │  {elapsed:.2f}s"
+                    "  Gen {gen:4d} │ "
+                    "Mean: {mean:12.2f} │ "
+                    "Best: {best:12.2f} │ "
+                    "Div: {div:8.2%} │ "
+                    "Δt: {dt:7.2f}s │ "
+                    "NoImp: {stall:4d} (last@{last:4d})".format(
+                        gen=generation,
+                        mean=generation_mean,
+                        best=generation_best.fitness,
+                        div=diversity,
+                        dt=elapsed,
+                        stall=stall_gens,
+                        last=last_improve_gen,
+                    )
                 )
 
-            # Report to framework and check time limit
             time_remaining = self._report_and_check(generation_mean, generation_best)
             if time_remaining < 0:
                 logger.info("\n  ⏱  Time limit reached")
@@ -952,6 +1021,7 @@ class r0123456:
                 logger.info("  Strategy: Crowding + diverse mutations + limited LSO")
 
         offspring = []
+        pop_best_fitness = min(population, key=lambda x: x.fitness).fitness
 
         # Calculate diversity periodically
         diversity = None
@@ -977,21 +1047,24 @@ class r0123456:
             parent2 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
 
             if self.is_sparse:
-                # For sparse matrices: more cloning, less crossover
-                if random.random() < 0.4:  # Increased from 0.3 for more crossover
-                    child = crossover_sparse_aware(problem, parent1, parent2)
+                if random.random() < 0.4:
+                    child = crossover_sparse_aware(
+                        problem, parent1, parent2
+                    )  # evaluates inside
                 else:
-                    # Clone better parent
                     better = parent1 if parent1.fitness < parent2.fitness else parent2
                     child = Individual(
                         tour=np.copy(better.tour), mutation_rate=better.mutation_rate
                     )
                     child.fitness = better.fitness
 
-                # Use safe mutation for sparse matrices
-                mutation_sparse_aware(child, problem)
+                # Tag parents BEFORE/AFTER mutation; doesn't matter, but must exist
+                child._p1_fitness = parent1.fitness
+                child._p2_fitness = parent2.fitness
+
+                mutation_sparse_aware(child, problem)  # may re-evaluate
+
             else:
-                # Normal GA for dense matrices
                 if random.random() < GA_PARAMS["CROSSOVER_PROB"]:
                     child = recombination(problem, parent1, parent2)
                 else:
@@ -1005,10 +1078,14 @@ class r0123456:
                 mutation(child)
                 child.evaluate(problem)
 
+                # Tag parents (needed for "beats parent" criterion)
+                child._p1_fitness = parent1.fitness
+                child._p2_fitness = parent2.fitness
+
             if not np.isinf(child.fitness):
                 offspring.append(child)
 
-        # Fallback: clone existing individuals if needed
+        # Fallback cloning
         min_offspring = max(3, len(population))
         cloned_count = 0
         while len(offspring) < min_offspring and len(population) > 0:
@@ -1017,6 +1094,11 @@ class r0123456:
                 tour=np.copy(parent.tour), mutation_rate=parent.mutation_rate
             )
             clone.fitness = parent.fitness
+
+            # Optional: tag parents so near-best criterion still works fine either way
+            clone._p1_fitness = parent.fitness
+            clone._p2_fitness = parent.fitness
+
             offspring.append(clone)
             cloned_count += 1
 
@@ -1030,8 +1112,12 @@ class r0123456:
 
         # Apply 2-opt (crucial for sparse matrices!)
         if offspring and GA_PARAMS.get("LOCAL_SEARCH_ENABLED", False):
-            apply_two_opt_to_offspring(
-                offspring, problem, max_iters=GA_PARAMS["LOCAL_SEARCH_MAX_ITERS"]
+            apply_two_opt_to_offspring_when_it_matters(
+                offspring,
+                problem,
+                max_iters=GA_PARAMS["LOCAL_SEARCH_MAX_ITERS"],
+                pop_best_fitness=pop_best_fitness,
+                # best_overall_fitness=best_overall_fitness,
             )
 
         return offspring
