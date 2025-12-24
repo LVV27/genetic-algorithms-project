@@ -1,17 +1,20 @@
 import Reporter
-import numpy as np
-import random
-import os
 import logging
+import os
+import random
 import time
-from typing import List, Tuple, Optional
+from dataclasses import dataclass
+from typing import List, Optional
+
+import numpy as np
+
+# ==============================================================
+# LOGGING
+# ==============================================================
 
 
-# ------------------------------
-# LOGGING SETUP
-# ------------------------------
 class ProfessionalFormatter(logging.Formatter):
-    """Custom formatter for professional-looking logs."""
+    """Minimal, readable log styling per severity level."""
 
     FORMATS = {
         logging.INFO: "%(message)s",
@@ -19,99 +22,96 @@ class ProfessionalFormatter(logging.Formatter):
         logging.ERROR: "❌ %(message)s",
     }
 
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno, "%(message)s")
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
+    def format(self, record: logging.LogRecord) -> str:
+        fmt = self.FORMATS.get(record.levelno, "%(message)s")
+        return logging.Formatter(fmt).format(record)
 
 
-# Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.handlers = []  # reset handlers when re-running in notebooks/IDEs
 
-# Remove existing handlers
-logger.handlers = []
-
-# Add custom handler
-handler = logging.StreamHandler()
-handler.setFormatter(ProfessionalFormatter())
-logger.addHandler(handler)
+_handler = logging.StreamHandler()
+_handler.setFormatter(ProfessionalFormatter())
+logger.addHandler(_handler)
 logger.propagate = False
 
 
-# ------------------------------
-# GLOBAL GA PARAMETERS
-# ------------------------------
-GA_PARAMS = {
-    # Population parameters
-    "POPULATION_SIZE": 50,  # λ (number of individuals in population)
-    "OFFSPRING_SIZE": 50,  # μ (number of offspring per generation)
-    "GENERATIONS": 10000,  # Maximum number of generations
-    # Selection parameters
-    "TOURNAMENT_K": 2,  # Tournament size for selection
-    # Mutation parameters
-    "MUTATION_ALPHA_MIN": 0.02,  # Minimum mutation rate
-    "MUTATION_ALPHA_MAX": 0.2,  # Maximum mutation rate
-    "DIVERSITY_CHECK_INTERVAL": 5,  # Check diversity every N generations
-    # Crossover parameters
-    "CROSSOVER_PROB": 0.8,  # Probability of crossover vs cloning
-    # Initialization parameters
-    "GREEDY_SEED_COUNT": 5,  # Number of greedy solutions to seed
-    "GREEDY_RESTARTS": 50,  # Number of random starts for greedy
-    # Local Search Operator (2-opt) parameters
-    "LOCAL_SEARCH_ENABLED": True,  # Enable/disable 2-opt local search
-    "LOCAL_SEARCH_MAX_ITERS": 2,  # Maximum iterations per individual in 2-opt
-    # Diversity promotion parameters
-    "USE_CROWDING": True,  # Enable deterministic crowding
-    "DIVERSITY_PRESERVATION": 0.2,  # Keep 20% of population for diversity
-    "LSO_APPLY_IF_BEATS_PARENT": True,
-    "LSO_NEAR_BEST_FRAC": 0.01,  # apply if child <= (1+5%) * best_in_population
-    "LSO_ALWAYS_IMPROVE_TOP_K": 5,  # always 2-opt top-K offspring by fitness
-    "LSO_LOG_COUNTS": False,
-}
-
-
 # ==============================================================
-# UTILITY FUNCTIONS
+# GA PARAMETERS (single source of truth)
 # ==============================================================
 
 
-def print_header(text: str, width: int = 70):
-    """Print a formatted header."""
-    logger.info("")
-    logger.info("┌" + "─" * (width - 2) + "┐")
-    logger.info(f"│ {text.center(width - 4)} │")
-    logger.info("└" + "─" * (width - 2) + "┘")
+@dataclass(frozen=True)
+class GAParams:
+    # Population
+    POPULATION_SIZE: int = 50  # λ
+    OFFSPRING_SIZE: int = 50  # μ
+    GENERATIONS: int = 10_000
+
+    # Selection
+    TOURNAMENT_K: int = 2
+
+    # Mutation (self-adaptive within [min, max])
+    MUTATION_ALPHA_MIN: float = 0.02
+    MUTATION_ALPHA_MAX: float = 0.20
+    DIVERSITY_CHECK_INTERVAL: int = 5
+
+    # Crossover
+    CROSSOVER_PROB: float = 0.8
+
+    # Greedy seeding
+    GREEDY_SEED_COUNT: int = 5
+    GREEDY_RESTARTS: int = 50
+
+    # Local search (2-opt)
+    LOCAL_SEARCH_ENABLED: bool = True
+    LOCAL_SEARCH_MAX_ITERS: int = 2
+
+    # Diversity preservation
+    USE_CROWDING: bool = True
+    DIVERSITY_PRESERVATION: float = 0.2
+
+    # When to apply 2-opt (keep it selective to save time)
+    LSO_APPLY_IF_BEATS_ANY_PARENT: bool = True
+    LSO_NEAR_BEST_FRAC: float = 0.01
+    LSO_ALWAYS_IMPROVE_TOP_K: int = 5
+    LSO_LOG_COUNTS: bool = False
 
 
-def print_section(title: str, width: int = 70):
-    """Print a section divider."""
+GA = GAParams()
+
+
+# ==============================================================
+# SMALL PRINT HELPERS
+# ==============================================================
+
+
+def print_section(title: str, width: int = 70) -> None:
+    """Console-friendly divider for stages (init/evolution/results)."""
     logger.info("")
-    logger.info(f"{'─' * width}")
+    logger.info("─" * width)
     logger.info(f" {title}")
-    logger.info(f"{'─' * width}")
+    logger.info("─" * width)
 
 
-def print_stats_table(stats: dict, width: int = 70):
-    """Print statistics in a clean table format."""
-    for key, value in stats.items():
-        if isinstance(value, float):
-            logger.info(f"  {key:<30} {value:>12.2f}")
-        else:
-            logger.info(f"  {key:<30} {value:>12}")
+def print_stats_table(stats: dict) -> None:
+    """Pretty-print a dict of stats with aligned columns."""
+    for k, v in stats.items():
+        logger.info(
+            f"  {k:<30} {v:>12.2f}" if isinstance(v, float) else f"  {k:<30} {v:>12}"
+        )
 
 
 # ==============================================================
-# PROBLEM REPRESENTATION
+# PROBLEM DEFINITION
 # ==============================================================
 
 
 class TravelingSalesmanProblem:
-    """
-    Represents a TSP instance with distance matrix and helper methods.
-    """
+    """TSP instance wrapper: distance matrix + light helpers."""
 
-    # Known heuristic values for benchmark instances
+    # Optional benchmark "known good" values (for quick sanity checks)
     HEURISTIC_VALUES = {
         "tour50.csv": 15665,
         "tour250.csv": 87874,
@@ -120,104 +120,69 @@ class TravelingSalesmanProblem:
         "tour1000.csv": 70468,
     }
 
-    def __init__(self, distance_matrix: np.ndarray, filename: str = None):
-        """
-        Initialize TSP problem.
-
-        Args:
-            distance_matrix: NxN matrix of distances between cities
-            filename: Optional name of the problem instance
-        """
+    def __init__(self, distance_matrix: np.ndarray, filename: Optional[str] = None):
         self.distance_matrix = distance_matrix
         self.num_cities = distance_matrix.shape[0]
         self.filename = filename
 
     def get_distance(self, city1: int, city2: int) -> float:
-        """Get distance between two cities."""
         return self.distance_matrix[city1, city2]
 
-    def get_num_cities(self) -> int:
-        """Get total number of cities."""
-        return self.num_cities
-
-    def print_info(self):
-        """Print problem information and known heuristic values."""
+    def print_info(self) -> None:
+        """One place to show instance metadata + heuristic target if known."""
         print_section("PROBLEM INSTANCE")
-        stats = {
-            "Instance": self.filename if self.filename else "Unknown",
-            "Cities": self.num_cities,
-        }
-        heuristic_value = self.HEURISTIC_VALUES.get(self.filename)
-        if heuristic_value is not None:
-            stats["Known Heuristic"] = float(heuristic_value)
+        stats = {"Instance": self.filename or "Unknown", "Cities": self.num_cities}
+        hv = self.HEURISTIC_VALUES.get(self.filename)
+        if hv is not None:
+            stats["Known Heuristic"] = float(hv)
         print_stats_table(stats)
 
 
 # ==============================================================
-# INDIVIDUAL REPRESENTATION
+# INDIVIDUAL (solution representation)
 # ==============================================================
 
 
 class Individual:
     """
-    Represents a candidate solution (tour) with adaptive mutation rate.
+    A candidate tour + its mutation rate.
+    Fitness = total tour length (lower is better).
     """
 
     def __init__(
         self,
-        problem: TravelingSalesmanProblem = None,
-        tour: np.ndarray = None,
-        mutation_rate: float = None,
+        problem: Optional[TravelingSalesmanProblem] = None,
+        tour: Optional[np.ndarray] = None,
+        mutation_rate: Optional[float] = None,
     ):
-        """
-        Create an individual with a tour and mutation rate.
-
-        Args:
-            problem: TSP instance (for random initialization)
-            tour: Explicit tour array (if not random)
-            mutation_rate: Initial mutation rate (randomized if None)
-        """
-        # Initialize tour
         if tour is not None:
             self.tour = np.array(tour, dtype=int)
         elif problem is not None:
             self.tour = np.random.permutation(problem.num_cities)
         else:
-            raise ValueError("Must provide TSP instance or explicit tour")
-
-        # Initialize mutation rate
-        if mutation_rate is None:
-            self.mutation_rate = random.uniform(
-                GA_PARAMS["MUTATION_ALPHA_MIN"], GA_PARAMS["MUTATION_ALPHA_MAX"]
+            raise ValueError(
+                "Provide either a problem (random init) or an explicit tour."
             )
-        else:
-            self.mutation_rate = mutation_rate
 
-        self.fitness = None
+        self.mutation_rate = (
+            random.uniform(GA.MUTATION_ALPHA_MIN, GA.MUTATION_ALPHA_MAX)
+            if mutation_rate is None
+            else float(mutation_rate)
+        )
+        self.fitness: Optional[float] = None
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
-        """
-        Calculate tour length (fitness) for this individual.
-
-        Args:
-            problem: TSP instance with distance matrix
-
-        Returns:
-            Total tour length (lower is better)
-        """
+        """Compute tour length; returns inf if any required edge is missing."""
         n = len(self.tour)
         total_distance = 0.0
 
         for i in range(n):
-            current_city = self.tour[i]
-            next_city = self.tour[(i + 1) % n]
+            current_city = int(self.tour[i])
+            next_city = int(self.tour[(i + 1) % n])
             distance = problem.get_distance(current_city, next_city)
-
-            # Check for invalid distances
             if np.isinf(distance):
                 self.fitness = np.inf
                 return self.fitness
-
             total_distance += distance
 
         self.fitness = total_distance
@@ -225,91 +190,57 @@ class Individual:
 
 
 # ==============================================================
-# DIVERSITY METRICS
+# DIVERSITY HELPERS
 # ==============================================================
-
-
-def tour_distance(tour1: np.ndarray, tour2: np.ndarray) -> int:
-    """
-    Calculate edit distance between two tours.
-    Counts how many positions have different cities.
-    """
-    return np.sum(tour1 != tour2)
-
-
-def fitness_similarity(ind1: Individual, ind2: Individual) -> float:
-    """
-    Calculate fitness similarity (0=identical, 1=very different).
-    """
-    if ind1.fitness == ind2.fitness:
-        return 0.0
-    return abs(ind1.fitness - ind2.fitness) / max(ind1.fitness, ind2.fitness)
 
 
 def find_most_similar(
     individual: Individual, population: List[Individual]
-) -> Individual:
-    """
-    Find the most similar individual in population (for crowding).
-    Uses fitness difference as primary metric.
-    """
+) -> Optional[Individual]:
+    """Crowding proxy: most similar by fitness distance (cheap + effective)."""
     if not population:
         return None
+    diffs = [abs(individual.fitness - ind.fitness) for ind in population]  # type: ignore[arg-type]
+    return population[int(np.argmin(diffs))]
 
-    # Find individual with most similar fitness
-    similarities = [abs(individual.fitness - ind.fitness) for ind in population]
-    most_similar_idx = np.argmin(similarities)
-    return population[most_similar_idx]
+
+def population_diversity(population: List[Individual]) -> float:
+    """Diversity score = fraction of unique tours (exact match uniqueness)."""
+    return len(set(tuple(ind.tour) for ind in population)) / max(1, len(population))
 
 
 # ==============================================================
-# GREEDY HEURISTIC
+# GREEDY HEURISTIC (for seeding)
 # ==============================================================
 
 
 def nearest_neighbor_greedy(
     problem: TravelingSalesmanProblem, start_city: int = 0
 ) -> Optional[np.ndarray]:
-    """
-    Construct a tour using nearest neighbor heuristic.
-
-    Args:
-        problem: TSP instance
-        start_city: Starting city for the tour
-
-    Returns:
-        Tour array or None if no valid tour exists
-    """
-    n = problem.get_num_cities()
+    """Build a tour by repeatedly going to the closest unvisited city."""
+    n = problem.num_cities
     unvisited = set(range(n))
     tour = [start_city]
     unvisited.remove(start_city)
-    current_city = start_city
+    cur = start_city
 
     while unvisited:
-        nearest_city = None
-        best_distance = float("inf")
-
-        # Find nearest unvisited city
-        for candidate in unvisited:
-            distance = problem.get_distance(current_city, candidate)
-            if distance < best_distance:
-                nearest_city = candidate
-                best_distance = distance
-
-        # Check if valid move was found
-        if nearest_city is None or np.isinf(best_distance):
-            return None
-
-        tour.append(nearest_city)
-        unvisited.remove(nearest_city)
-        current_city = nearest_city
+        nxt, best = None, float("inf")
+        for cand in unvisited:
+            d = problem.get_distance(cur, cand)
+            if d < best:
+                nxt, best = cand, d
+        if nxt is None or np.isinf(best):
+            return None  # no feasible continuation
+        tour.append(nxt)
+        unvisited.remove(nxt)
+        cur = nxt
 
     return np.array(tour, dtype=int)
 
 
 # ==============================================================
-# POPULATION INITIALIZATION
+# POPULATION INITIALIZATION (sparse-aware)
 # ==============================================================
 
 
@@ -317,91 +248,69 @@ def initialize_population_greedy_sparse_aware(
     problem: TravelingSalesmanProblem, population_size: int
 ) -> List[Individual]:
     """
-    Initialize population for sparse matrices - allows incomplete populations.
+    Seed with greedy tours; fill remaining with random tours if feasible.
 
-    SIMPLE CHANGE:
-    - If feasibility-based sparsity says random tours are basically impossible,
-      rely almost entirely on greedy restarts instead of random permutations.
+    For very sparse graphs, random permutations are almost always invalid,
+    so we over-sample greedy restarts and allow cloning to reach minimum size.
     """
-    population: List[Individual] = []
-    greedy_candidates: List[Individual] = []
-
-    # --- decide whether random tours are feasible ---
-    n = problem.get_num_cities()
+    n = problem.num_cities
     dm = problem.distance_matrix
     off = ~np.eye(n, dtype=bool)
     sparsity = float(np.isinf(dm[off]).sum()) / float(n * (n - 1))
     p_valid_random_tour = (1.0 - sparsity) ** n
+    random_ok = p_valid_random_tour >= 1e-6
 
-    random_tours_feasible = p_valid_random_tour >= 1e-6  # same as detector
-
-    greedy_seeds = GA_PARAMS["GREEDY_SEED_COUNT"]
-    greedy_restarts = GA_PARAMS["GREEDY_RESTARTS"]
-
-    # If random tours are not feasible, increase greedy restarts (simple + effective)
-    if not random_tours_feasible:
-        greedy_restarts = max(
-            greedy_restarts, population_size * 40
-        )  # e.g. 2000 for pop=50
+    greedy_seeds = GA.GREEDY_SEED_COUNT
+    greedy_restarts = GA.GREEDY_RESTARTS
+    if not random_ok:
+        greedy_restarts = max(greedy_restarts, population_size * 40)
         greedy_seeds = max(greedy_seeds, min(population_size, 20))
 
-    # Generate greedy tours from many starting cities
-    start_cities = random.sample(range(n), min(n, greedy_restarts))
-
-    for start in start_cities:
+    greedy_candidates: List[Individual] = []
+    for start in random.sample(range(n), min(n, greedy_restarts)):
         tour = nearest_neighbor_greedy(problem, start)
         if tour is None:
             continue
-        individual = Individual(tour=tour)
-        individual.evaluate(problem)
-        if not np.isinf(individual.fitness):
-            greedy_candidates.append(individual)
+        ind = Individual(tour=tour)
+        ind.evaluate(problem)
+        if np.isfinite(ind.fitness):
+            greedy_candidates.append(ind)
 
-    # Select best unique greedy solutions
-    seen_tours = set()
-    unique_greedy: List[Individual] = []
-
-    for individual in sorted(greedy_candidates, key=lambda x: x.fitness):
-        tour_key = (int(individual.fitness), tuple(individual.tour))
-        if tour_key not in seen_tours:
-            unique_greedy.append(individual)
-            seen_tours.add(tour_key)
-        if len(unique_greedy) >= greedy_seeds:
+    # Keep best unique greedy tours (uniqueness by exact tour)
+    seen = set()
+    population: List[Individual] = []
+    for ind in sorted(greedy_candidates, key=lambda x: x.fitness):
+        key = (int(ind.fitness), tuple(ind.tour))  # stable dedup for identical tours
+        if key not in seen:
+            population.append(ind)
+            seen.add(key)
+        if len(population) >= greedy_seeds:
             break
 
-    population.extend(unique_greedy)
-
-    # Fill remainder
-    # - If random tours are feasible: try random permutations
-    # - If not: just clone greedy tours (still keeps GA running)
-    if random_tours_feasible:
-        attempts = 0
-        max_attempts = population_size * 10000
-
+    # Fill remaining slots
+    if random_ok:
+        attempts, max_attempts = 0, population_size * 10_000
         while len(population) < population_size and attempts < max_attempts:
-            individual = Individual(problem)
-            if not np.isinf(individual.evaluate(problem)):
-                population.append(individual)
+            ind = Individual(problem)
+            if np.isfinite(ind.evaluate(problem)):
+                population.append(ind)
             attempts += 1
     else:
-        # No feasible way to get random tours; clone from existing valid tours
-        while len(population) < population_size and len(population) > 0:
-            template = random.choice(population)
-            clone = Individual(
-                tour=np.copy(template.tour), mutation_rate=template.mutation_rate
-            )
-            clone.fitness = template.fitness
+        # No feasible random tours → clone what we have to keep GA running
+        while len(population) < population_size and population:
+            src = random.choice(population)
+            clone = Individual(tour=np.copy(src.tour), mutation_rate=src.mutation_rate)
+            clone.fitness = src.fitness
             population.append(clone)
 
-    # Allow small populations for very sparse matrices
-    min_population = max(3, population_size // 10)
-
-    if len(population) < min_population:
+    # Ensure a small minimum population even in extreme sparsity
+    min_pop = max(3, population_size // 10)
+    if len(population) < min_pop:
         logger.error(f"Critical: Only {len(population)} valid individuals found.")
-        while len(population) < min_population and len(population) > 0:
-            template = random.choice(population)
-            clone = Individual(tour=np.copy(template.tour))
-            clone.fitness = template.fitness
+        while len(population) < min_pop and population:
+            src = random.choice(population)
+            clone = Individual(tour=np.copy(src.tour), mutation_rate=src.mutation_rate)
+            clone.fitness = src.fitness
             population.append(clone)
     elif len(population) < population_size:
         logger.warning(
@@ -410,7 +319,7 @@ def initialize_population_greedy_sparse_aware(
     else:
         logger.info(
             f"  Initialized {len(population)} individuals "
-            f"({len(unique_greedy)} greedy, {len(population) - len(unique_greedy)} random/clone)"
+            f"({min(len(seen), greedy_seeds)} greedy, {len(population) - min(len(seen), greedy_seeds)} random/clone)"
         )
 
     return population
@@ -422,80 +331,38 @@ def initialize_population_greedy_sparse_aware(
 
 
 def tournament_selection(population: List[Individual], k: int) -> Individual:
-    """
-    Select individual using tournament selection.
-    """
-    competitors = random.sample(population, k)
-    return min(competitors, key=lambda ind: ind.fitness)
+    """Pick best out of k random competitors (pressure via k)."""
+    return min(random.sample(population, k), key=lambda ind: ind.fitness)
 
 
 # ==============================================================
-# MUTATION OPERATORS - INCREASED DIVERSITY
+# MUTATION OPERATORS
 # ==============================================================
 
 
-def mutation(individual: Individual):
-    """
-    Apply mutation to an individual with adaptive rate.
-
-    Randomly selects one of four mutation operators:
-    - Swap: Exchange two cities
-    - Inversion: Reverse a segment
-    - Scramble: Shuffle a segment
-    - Insertion: Move a city to a new position
-
-    Args:
-        individual: Individual to mutate (modified in-place)
-    """
-    if random.random() >= individual.mutation_rate:
-        return
-
-    n = len(individual.tour)
-
-    # More diverse mutation operator mix
-    operator_weights = {
-        "swap": 0.25,
-        "inversion": 0.35,
-        "scramble": 0.25,
-        "insertion": 0.15,
-    }
-
-    strategy = random.choices(
-        list(operator_weights.keys()), weights=list(operator_weights.values()), k=1
-    )[0]
-
-    if strategy == "swap":
-        _mutation_swap(individual.tour, n)
-    elif strategy == "inversion":
-        _mutation_inversion(individual.tour, n)
-    elif strategy == "scramble":
-        _mutation_scramble(individual.tour, n)
-    elif strategy == "insertion":
-        _mutation_insertion(individual, n)
-
-
-def _mutation_swap(tour: np.ndarray, n: int):
-    """Swap two random cities."""
-    i, j = random.sample(range(n), 2)
+def _mutation_swap(tour: np.ndarray) -> None:
+    """Swap two positions."""
+    i, j = random.sample(range(len(tour)), 2)
     tour[i], tour[j] = tour[j], tour[i]
 
 
-def _mutation_inversion(tour: np.ndarray, n: int):
-    """Reverse a random segment of the tour."""
-    i, j = sorted(random.sample(range(n), 2))
+def _mutation_inversion(tour: np.ndarray) -> None:
+    """Reverse a contiguous segment."""
+    i, j = sorted(random.sample(range(len(tour)), 2))
     tour[i : j + 1] = tour[i : j + 1][::-1]
 
 
-def _mutation_scramble(tour: np.ndarray, n: int):
-    """Randomly shuffle a segment of the tour."""
-    i, j = sorted(random.sample(range(n), 2))
-    segment = tour[i : j + 1].copy()
-    random.shuffle(segment)
-    tour[i : j + 1] = segment
+def _mutation_scramble(tour: np.ndarray) -> None:
+    """Shuffle a segment in-place."""
+    i, j = sorted(random.sample(range(len(tour)), 2))
+    seg = tour[i : j + 1].copy()
+    random.shuffle(seg)
+    tour[i : j + 1] = seg
 
 
-def _mutation_insertion(individual: Individual, n: int):
-    """Move a city to a different position in the tour."""
+def _mutation_insertion(individual: Individual) -> None:
+    """Remove one city and insert it elsewhere."""
+    n = len(individual.tour)
     i, j = random.sample(range(n), 2)
     gene = individual.tour[i]
     if i < j:
@@ -518,54 +385,61 @@ def _mutation_insertion(individual: Individual, n: int):
         )
 
 
-def mutation_sparse_aware(individual: Individual, problem: TravelingSalesmanProblem):
-    """Safe mutation for sparse matrices with increased randomness."""
+def mutation(individual: Individual) -> None:
+    """Dense-matrix mutation: operator mix + per-individual rate."""
     if random.random() >= individual.mutation_rate:
         return
 
-    n = len(individual.tour)
+    strategy = random.choices(
+        ["swap", "inversion", "scramble", "insertion"],
+        weights=[0.25, 0.35, 0.25, 0.15],
+        k=1,
+    )[0]
+
+    if strategy == "swap":
+        _mutation_swap(individual.tour)
+    elif strategy == "inversion":
+        _mutation_inversion(individual.tour)
+    elif strategy == "scramble":
+        _mutation_scramble(individual.tour)
+    else:
+        _mutation_insertion(individual)
+
+
+def mutation_sparse_aware(
+    individual: Individual, problem: TravelingSalesmanProblem
+) -> None:
+    """
+    Sparse-safe mutation: keep trying until a valid child appears (or give up).
+    This avoids wasting generations on invalid tours (inf fitness).
+    """
+    if random.random() >= individual.mutation_rate:
+        return
+
     original_tour = individual.tour.copy()
-    original_fitness = individual.fitness
-    max_tries = 30  # Increased from 20 for more variation attempts
+    original_fit = individual.fitness
+    max_tries = 30
 
     for _ in range(max_tries):
-        # More diverse mutation types for sparse matrices
-        mutation_type = random.choice(["swap", "inversion", "double_swap"])
+        t = random.choice(["swap", "inversion", "double_swap"])
 
-        if mutation_type == "swap":
-            i, j = random.sample(range(n), 2)
-            individual.tour[i], individual.tour[j] = (
-                individual.tour[j],
-                individual.tour[i],
-            )
-        elif mutation_type == "double_swap":
-            # Two consecutive swaps for more variation
-            i, j = random.sample(range(n), 2)
-            individual.tour[i], individual.tour[j] = (
-                individual.tour[j],
-                individual.tour[i],
-            )
-            k, l = random.sample(range(n), 2)
-            individual.tour[k], individual.tour[l] = (
-                individual.tour[l],
-                individual.tour[k],
-            )
-        else:  # inversion
-            i, j = sorted(random.sample(range(n), 2))
-            if j - i > n // 3:  # Allow larger inversions (was n//4)
+        if t == "swap":
+            _mutation_swap(individual.tour)
+        elif t == "double_swap":
+            _mutation_swap(individual.tour)
+            _mutation_swap(individual.tour)
+        else:
+            i, j = sorted(random.sample(range(len(individual.tour)), 2))
+            if j - i > len(individual.tour) // 3:
                 continue
             individual.tour[i : j + 1] = individual.tour[i : j + 1][::-1]
 
-        # Check if the new tour is valid
-        new_fitness = individual.evaluate(problem)
+        if np.isfinite(individual.evaluate(problem)):
+            return  # keep the first valid mutation
 
-        if not np.isinf(new_fitness):
-            # Valid mutation found!
-            return
-        else:
-            # Revert the mutation
-            individual.tour = original_tour.copy()
-            individual.fitness = original_fitness
+        # revert and try again
+        individual.tour = original_tour.copy()
+        individual.fitness = original_fit
 
 
 # ==============================================================
@@ -574,34 +448,20 @@ def mutation_sparse_aware(individual: Individual, problem: TravelingSalesmanProb
 
 
 def recombination(
-    problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual
+    problem: TravelingSalesmanProblem, p1: Individual, p2: Individual
 ) -> Individual:
     """
-    Create offspring using Cycle Crossover (CX).
-
-    CX preserves the absolute position of cities from parents while
-    ensuring each city appears exactly once.
-
-    Args:
-        problem: TSP instance
-        parent1: First parent
-        parent2: Second parent
-
-    Returns:
-        New offspring individual
+    Order-based slice fill (often called OX-style):
+    - Copy a slice from p1
+    - Fill remaining positions in p2 order
     """
-    n = problem.get_num_cities()
+    n = problem.num_cities
     a, b = sorted(random.sample(range(n), 2))
     child = np.full(n, -1, dtype=int)
 
-    child[a : b + 1] = parent1.tour[a : b + 1]
+    child[a : b + 1] = p1.tour[a : b + 1]
     used = set(int(x) for x in child[a : b + 1])
-
-    fill = []
-    for city in parent2.tour:
-        c = int(city)
-        if c not in used:
-            fill.append(c)
+    fill = [int(c) for c in p2.tour if int(c) not in used]
 
     idx = 0
     for i in range(n):
@@ -609,148 +469,102 @@ def recombination(
             child[i] = fill[idx]
             idx += 1
 
-    return Individual(problem, child, mutation_rate=parent1.mutation_rate)
+    return Individual(tour=child, mutation_rate=p1.mutation_rate)
 
 
 def crossover_sparse_aware(
-    problem: TravelingSalesmanProblem, parent1: Individual, parent2: Individual
+    problem: TravelingSalesmanProblem, p1: Individual, p2: Individual
 ) -> Individual:
-    """
-    Edge-preserving crossover that validates the child tour.
-    Falls back to cloning best parent if crossover creates invalid tour.
-    """
-    # Try cycle crossover
-    child = recombination(problem, parent1, parent2)
+    """Try crossover; if invalid, clone the better parent."""
+    child = recombination(problem, p1, p2)
     child.evaluate(problem)
-
-    # If invalid, just clone the better parent
     if np.isinf(child.fitness):
-        better_parent = parent1 if parent1.fitness < parent2.fitness else parent2
+        better = p1 if p1.fitness < p2.fitness else p2
         child = Individual(
-            tour=np.copy(better_parent.tour), mutation_rate=better_parent.mutation_rate
+            tour=np.copy(better.tour), mutation_rate=better.mutation_rate
         )
-        child.fitness = better_parent.fitness
-
+        child.fitness = better.fitness
     return child
 
 
 # ==============================================================
-# SURVIVAL SELECTION - DIVERSITY-PRESERVING
+# SURVIVOR SELECTION
 # ==============================================================
 
 
 def elimination_with_crowding(
-    population: List[Individual], offspring: List[Individual], population_size: int
+    population: List[Individual], offspring: List[Individual], pop_size: int
 ) -> List[Individual]:
     """
-    Deterministic crowding: offspring compete with most similar parents.
-    Promotes diversity by preventing similar individuals from dominating.
+    Deterministic crowding:
+    Each child competes against the most similar existing individual.
     """
     if not offspring:
-        return population[:population_size]
+        return population[:pop_size]
 
-    new_population = list(population)
-
+    new_pop = list(population)
     for child in offspring:
-        if len(new_population) >= population_size:
-            # Find most similar individual
-            most_similar = find_most_similar(child, new_population)
-
-            # Replace if child is better
-            if most_similar and child.fitness < most_similar.fitness:
-                new_population.remove(most_similar)
-                new_population.append(child)
+        if len(new_pop) >= pop_size:
+            rival = find_most_similar(child, new_pop)
+            if rival and child.fitness < rival.fitness:
+                new_pop.remove(rival)
+                new_pop.append(child)
         else:
-            new_population.append(child)
+            new_pop.append(child)
 
-    # Final sorting and truncation
-    new_population.sort(key=lambda x: x.fitness)
-    return new_population[:population_size]
+    new_pop.sort(key=lambda x: x.fitness)
+    return new_pop[:pop_size]
 
 
 def elimination_diversity_preserved(
-    population: List[Individual], offspring: List[Individual], population_size: int
+    population: List[Individual], offspring: List[Individual], pop_size: int
 ) -> List[Individual]:
     """
-    Hybrid elimination: Keep best performers + diverse individuals.
-    Balances exploitation (LSO) with exploration (diversity).
+    Keep elites + fill the rest with individuals that are far in fitness
+    (cheap diversity heuristic when not using crowding).
     """
     combined = population + offspring
-
-    if len(combined) <= population_size:
+    if len(combined) <= pop_size:
         return combined
 
-    # Sort by fitness
     combined.sort(key=lambda x: x.fitness)
+    elites = int(pop_size * (1 - GA.DIVERSITY_PRESERVATION))
+    new_pop = combined[:elites]
+    candidates = combined[elites:]
 
-    # Calculate how many to keep for diversity
-    elites_count = int(population_size * (1 - GA_PARAMS["DIVERSITY_PRESERVATION"]))
-    diversity_count = population_size - elites_count
-
-    # Keep best performers
-    new_population = combined[:elites_count]
-
-    # Add diverse individuals from remainder
-    candidates = combined[elites_count:]
-
-    while len(new_population) < population_size and candidates:
-        # Find most diverse candidate (different from current population)
-        best_candidate = None
-        max_diversity = -1
-
-        for candidate in candidates:
-            # Calculate average fitness distance to current population
-            avg_distance = np.mean(
-                [abs(candidate.fitness - ind.fitness) for ind in new_population]
-            )
-
-            if avg_distance > max_diversity:
-                max_diversity = avg_distance
-                best_candidate = candidate
-
-        if best_candidate:
-            new_population.append(best_candidate)
-            candidates.remove(best_candidate)
-        else:
+    while len(new_pop) < pop_size and candidates:
+        best, best_score = None, -1.0
+        for c in candidates:
+            score = float(np.mean([abs(c.fitness - ind.fitness) for ind in new_pop]))
+            if score > best_score:
+                best, best_score = c, score
+        if best is None:
             break
+        new_pop.append(best)
+        candidates.remove(best)
 
-    # Fill remainder if needed
-    while len(new_population) < population_size and candidates:
-        new_population.append(candidates.pop(0))
+    while len(new_pop) < pop_size and candidates:
+        new_pop.append(candidates.pop(0))
 
-    return new_population
+    return new_pop
 
 
 # ==============================================================
-# ADAPTIVE MUTATION - LIMITED RANGE
+# ADAPTIVE MUTATION RATE
 # ==============================================================
 
 
-def adaptive_mutation_rate(individual: Individual, diversity: float):
-    """
-    Adjust mutation rate with LIMITED range to prevent over-exploitation.
-    """
-    # More conservative adaptation
-    base_rate = (GA_PARAMS["MUTATION_ALPHA_MIN"] + GA_PARAMS["MUTATION_ALPHA_MAX"]) / 2
-    diversity_factor = (1 - diversity) * 0.5  # Reduced from 0.8
-
-    # Clamp to defined range
-    new_rate = base_rate + diversity_factor
-    individual.mutation_rate = np.clip(
-        new_rate, GA_PARAMS["MUTATION_ALPHA_MIN"], GA_PARAMS["MUTATION_ALPHA_MAX"]
+def adaptive_mutation_rate(individual: Individual, diversity: float) -> None:
+    """Lower diversity → slightly higher mutation (clamped to safe range)."""
+    base = (GA.MUTATION_ALPHA_MIN + GA.MUTATION_ALPHA_MAX) / 2
+    factor = (1 - diversity) * 0.5
+    individual.mutation_rate = float(
+        np.clip(base + factor, GA.MUTATION_ALPHA_MIN, GA.MUTATION_ALPHA_MAX)
     )
 
 
-def population_diversity(population: List[Individual]) -> float:
-    """
-    Calculate population diversity as ratio of unique tours.
-    """
-    unique_tours = len(set(tuple(ind.tour) for ind in population))
-    return unique_tours / len(population)
-
-
 # ==============================================================
-# LOCAL SEARCH OPERATOR (2-OPT)
+# LOCAL SEARCH (2-opt)
 # ==============================================================
 
 
@@ -758,46 +572,42 @@ def two_opt_local_search(
     individual: Individual, problem: TravelingSalesmanProblem, max_iters: int = 5
 ) -> Individual:
     """
-    Improve individual's tour using 2-opt with delta evaluation.
-    Optimized for sparse matrices by skipping infinite edges.
+    2-opt with delta evaluation:
+    swap edges (a-b, c-d) → (a-c, b-d) if it shortens tour.
+    Skips moves that would introduce infinite edges (sparse-safe).
     """
     n = len(individual.tour)
     if individual.fitness is None:
         individual.evaluate(problem)
 
     tour = individual.tour
-    best_fitness = individual.fitness
-    distance_matrix = problem.distance_matrix
+    best = float(individual.fitness)
+    dm = problem.distance_matrix
 
     for _ in range(max_iters):
         improved = False
         for i in range(1, n - 1):
             for j in range(i + 1, n):
-                next_j = (j + 1) % n
+                nj = (j + 1) % n
+                a, b = tour[i - 1], tour[i]
+                c, d = tour[j], tour[nj]
 
-                # Skip if any edge is infinite
+                # Skip invalid edge combos quickly
                 if (
-                    np.isinf(distance_matrix[tour[i - 1], tour[i]])
-                    or np.isinf(distance_matrix[tour[j], tour[next_j]])
-                    or np.isinf(distance_matrix[tour[i - 1], tour[j]])
-                    or np.isinf(distance_matrix[tour[i], tour[next_j]])
+                    np.isinf(dm[a, b])
+                    or np.isinf(dm[c, d])
+                    or np.isinf(dm[a, c])
+                    or np.isinf(dm[b, d])
                 ):
                     continue
 
-                current_dist = (
-                    distance_matrix[tour[i - 1], tour[i]]
-                    + distance_matrix[tour[j], tour[next_j]]
-                )
-                new_dist = (
-                    distance_matrix[tour[i - 1], tour[j]]
-                    + distance_matrix[tour[i], tour[next_j]]
-                )
-
-                delta = new_dist - current_dist
+                cur = dm[a, b] + dm[c, d]
+                new = dm[a, c] + dm[b, d]
+                delta = new - cur
 
                 if delta < -1e-9:
                     tour[i : j + 1] = tour[i : j + 1][::-1]
-                    best_fitness += delta
+                    best += float(delta)
                     improved = True
                     break
             if improved:
@@ -806,31 +616,34 @@ def two_opt_local_search(
             break
 
     individual.tour = tour
-    individual.fitness = best_fitness
+    individual.fitness = best
     return individual
 
 
 def apply_two_opt_to_offspring_when_it_matters(
-    offspring: list[Individual],
+    offspring: List[Individual],
     problem: TravelingSalesmanProblem,
     max_iters: int = 2,
-    pop_best_fitness: float | None = None,
-    best_overall_fitness: float | None = None,
+    pop_best_fitness: Optional[float] = None,
+    best_overall_fitness: Optional[float] = None,
 ) -> None:
+    """
+    Apply 2-opt selectively:
+    - always top-K offspring
+    - plus offspring that beat a parent OR are near best (within a small fraction)
+    """
     if not offspring:
         return
 
     offspring.sort(key=lambda x: x.fitness)
+    k = int(GA.LSO_ALWAYS_IMPROVE_TOP_K)
+    selected = {id(ind) for ind in offspring[: max(0, k)]}
 
-    k = int(GA_PARAMS.get("LSO_ALWAYS_IMPROVE_TOP_K", 5))
-    selected = set(id(ind) for ind in offspring[: max(0, k)])
-
-    near_frac = float(GA_PARAMS.get("LSO_NEAR_BEST_FRAC", 0.01))
     thresholds = []
     if pop_best_fitness is not None and np.isfinite(pop_best_fitness):
-        thresholds.append(pop_best_fitness * (1.0 + near_frac))
+        thresholds.append(pop_best_fitness * (1.0 + GA.LSO_NEAR_BEST_FRAC))
     if best_overall_fitness is not None and np.isfinite(best_overall_fitness):
-        thresholds.append(best_overall_fitness * (1.0 + near_frac))
+        thresholds.append(best_overall_fitness * (1.0 + GA.LSO_NEAR_BEST_FRAC))
     thr = min(thresholds) if thresholds else None
 
     for ind in offspring:
@@ -840,20 +653,18 @@ def apply_two_opt_to_offspring_when_it_matters(
         p1 = getattr(ind, "_p1_fitness", None)
         p2 = getattr(ind, "_p2_fitness", None)
 
-        beats_any_parent = False
-        if (
-            GA_PARAMS.get("LSO_APPLY_IF_BEATS_ANY_PARENT", True)
+        beats_parent = (
+            GA.LSO_APPLY_IF_BEATS_ANY_PARENT
             and p1 is not None
             and p2 is not None
-        ):
-            beats_any_parent = (ind.fitness + 1e-9) < max(p1, p2)
-
+            and (ind.fitness + 1e-9) < max(p1, p2)
+        )
         near_best = thr is not None and ind.fitness <= thr
 
-        if beats_any_parent or near_best:
+        if beats_parent or near_best:
             selected.add(id(ind))
 
-    if GA_PARAMS.get("LSO_LOG_COUNTS", True):
+    if GA.LSO_LOG_COUNTS:
         logger.info(f"  LSO: 2-opt on {len(selected)}/{len(offspring)} offspring")
 
     for ind in offspring:
@@ -862,148 +673,116 @@ def apply_two_opt_to_offspring_when_it_matters(
 
 
 # ==============================================================
-# SPARSE MATRIX DETECTION - FIXED
+# SPARSITY DETECTION
 # ==============================================================
 
 
 def is_sparse_matrix(distance_matrix: np.ndarray, threshold: float = 0.1) -> bool:
-    """
-    Detect if distance matrix is sparse (many infinite/missing edges).
-    FIXED: Only counts off-diagonal infinite values.
-    """
+    """Sparse = many off-diagonal inf edges (missing connections)."""
     n = distance_matrix.shape[0]
-
-    # Create mask for off-diagonal elements
-    off_diagonal_mask = ~np.eye(n, dtype=bool)
-
-    # Count infinite values in off-diagonal elements only
-    off_diagonal_values = distance_matrix[off_diagonal_mask]
-    inf_count = np.sum(np.isinf(off_diagonal_values))
-
-    total_edges = n * (n - 1)
-    sparsity = inf_count / total_edges if total_edges > 0 else 0.0
-
+    off = ~np.eye(n, dtype=bool)
+    inf_count = int(np.isinf(distance_matrix[off]).sum())
+    total = n * (n - 1)
+    sparsity = inf_count / total if total else 0.0
     logger.info(f"  Matrix sparsity: {sparsity:.1%} of edges are infinite")
     return sparsity > threshold
 
 
 # ==============================================================
-# MAIN GA SOLVER
+# MAIN SOLVER
 # ==============================================================
 
 
 class r0123456:
-    """
-    Main genetic algorithm solver for TSP with diversity promotion.
-    """
+    """Genetic Algorithm for TSP with sparse-graph fallbacks + optional 2-opt."""
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
         self.is_sparse = False
 
     def optimize(self, filename: str) -> int:
-        distance_matrix = self._read_distance_matrix(filename)
-        problem = TravelingSalesmanProblem(distance_matrix, os.path.basename(filename))
+        problem = TravelingSalesmanProblem(
+            self._read_distance_matrix(filename), os.path.basename(filename)
+        )
         problem.print_info()
 
-        # Initialize population
         print_section("INITIALIZATION")
-        population = self._init_population(problem)
+        population = initialize_population_greedy_sparse_aware(
+            problem, GA.POPULATION_SIZE
+        )
         self._log_population_stats(population, "Initial Population")
 
-        # Track best solution
         best_overall = min(population, key=lambda x: x.fitness)
         best_overall_fitness = best_overall.fitness
-        last_improve_gen = 0
-        stall_gens = 0
+        last_improve_gen, stall_gens = 0, 0
 
-        # Main evolution loop
         print_section("EVOLUTION")
-        start_time = time.perf_counter()
-        checkpoint_time = start_time
+        start = time.perf_counter()
+        checkpoint = start
 
-        for generation in range(1, GA_PARAMS["GENERATIONS"] + 1):
-            # Generate offspring
-            offspring = self._evolve_one_generation(population, problem, generation)
+        for gen in range(1, GA.GENERATIONS + 1):
+            offspring = self._evolve_one_generation(population, problem, gen)
 
-            # Use diversity-preserving elimination
-            if GA_PARAMS["USE_CROWDING"]:
-                population = elimination_with_crowding(
-                    population, offspring, GA_PARAMS["POPULATION_SIZE"]
+            population = (
+                elimination_with_crowding(population, offspring, GA.POPULATION_SIZE)
+                if GA.USE_CROWDING
+                else elimination_diversity_preserved(
+                    population, offspring, GA.POPULATION_SIZE
                 )
-            else:
-                population = elimination_diversity_preserved(
-                    population, offspring, GA_PARAMS["POPULATION_SIZE"]
-                )
+            )
 
-            generation_best = min(population, key=lambda x: x.fitness)
+            gen_best = min(population, key=lambda x: x.fitness)
 
-            # --- improvement / stall tracking ---
-            if generation_best.fitness < best_overall_fitness - 1e-9:
-                best_overall = generation_best
-                best_overall_fitness = generation_best.fitness
-                last_improve_gen = generation
-                stall_gens = 0
+            # Track best-so-far + stall for progress visibility
+            if gen_best.fitness < best_overall_fitness - 1e-9:
+                best_overall, best_overall_fitness = gen_best, gen_best.fitness
+                last_improve_gen, stall_gens = gen, 0
             else:
                 stall_gens += 1
 
-            generation_mean = float(np.mean([ind.fitness for ind in population]))
+            gen_mean = float(np.mean([ind.fitness for ind in population]))
 
-            # Log diversity periodically
-            if generation % 10 == 0:
-                elapsed = time.perf_counter() - checkpoint_time
-                checkpoint_time = time.perf_counter()
-                diversity = population_diversity(population)
-
-                # Fixed-width, consistent columns
+            # Periodic compact log line (consistent columns)
+            if gen % 10 == 0:
+                dt = time.perf_counter() - checkpoint
+                checkpoint = time.perf_counter()
+                div = population_diversity(population)
                 logger.info(
-                    "  Gen {gen:4d} │ "
-                    "Mean: {mean:12.2f} │ "
-                    "Best: {best:12.2f} │ "
-                    "Div: {div:8.2%} │ "
-                    "Δt: {dt:7.2f}s │ "
-                    "NoImp: {stall:4d} (last@{last:4d})".format(
-                        gen=generation,
-                        mean=generation_mean,
-                        best=generation_best.fitness,
-                        div=diversity,
-                        dt=elapsed,
-                        stall=stall_gens,
-                        last=last_improve_gen,
+                    "  Gen {g:4d} │ Mean: {m:12.2f} │ Best: {b:12.2f} │ Div: {d:8.2%} │ "
+                    "Δt: {t:7.2f}s │ NoImp: {s:4d} (last@{l:4d})".format(
+                        g=gen,
+                        m=gen_mean,
+                        b=gen_best.fitness,
+                        d=div,
+                        t=dt,
+                        s=stall_gens,
+                        l=last_improve_gen,
                     )
                 )
 
-            time_remaining = self._report_and_check(generation_mean, generation_best)
-            if time_remaining < 0:
+            # Reporter handles time limit; negative means "stop"
+            if self.reporter.report(gen_mean, gen_best.fitness, gen_best.tour) < 0:
                 logger.info("\n  ⏱  Time limit reached")
                 break
 
-        # Final summary
-        total_time = time.perf_counter() - start_time
+        total = time.perf_counter() - start
         print_section("RESULTS")
-
-        final_stats = {
-            "Best Fitness": best_overall.fitness,
-            "Generations": generation,
-            "Total Time (s)": total_time,
-            "Avg Time/Gen (s)": total_time / generation,
-            "Final Diversity": population_diversity(population),
-        }
-        print_stats_table(final_stats)
+        print_stats_table(
+            {
+                "Best Fitness": best_overall.fitness,
+                "Generations": gen,
+                "Total Time (s)": total,
+                "Avg Time/Gen (s)": total / gen,
+                "Final Diversity": population_diversity(population),
+            }
+        )
         logger.info("")
-
         return 0
 
     def _read_distance_matrix(self, filename: str) -> np.ndarray:
-        """Load distance matrix from CSV file."""
+        """CSV → numpy distance matrix."""
         with open(filename, "r") as f:
             return np.loadtxt(f, delimiter=",")
-
-    def _init_population(self, problem: TravelingSalesmanProblem) -> List[Individual]:
-        """Initialize population using sparse-aware greedy seeding strategy."""
-        return initialize_population_greedy_sparse_aware(
-            problem, GA_PARAMS["POPULATION_SIZE"]
-        )
 
     def _evolve_one_generation(
         self,
@@ -1011,147 +790,107 @@ class r0123456:
         problem: TravelingSalesmanProblem,
         generation: int,
     ) -> List[Individual]:
-        """
-        Evolution step that adapts to sparse matrices.
-        """
+        """Create offspring (strategy switches for sparse vs dense graphs)."""
         if generation == 1:
             self.is_sparse = is_sparse_matrix(problem.distance_matrix)
             if self.is_sparse:
                 logger.info("  🔍 Sparse matrix detected - using adapted strategy")
-                logger.info("  Strategy: Crowding + diverse mutations + limited LSO")
+                logger.info(
+                    "  Strategy: Crowding + sparse-safe mutation + selective 2-opt"
+                )
 
-        offspring = []
-        pop_best_fitness = min(population, key=lambda x: x.fitness).fitness
+        offspring: List[Individual] = []
+        pop_best = min(population, key=lambda x: x.fitness).fitness
 
-        # Calculate diversity periodically
-        diversity = None
-        if generation % GA_PARAMS["DIVERSITY_CHECK_INTERVAL"] == 0:
-            diversity = population_diversity(population)
+        diversity = (
+            population_diversity(population)
+            if generation % GA.DIVERSITY_CHECK_INTERVAL == 0
+            else None
+        )
 
-        if self.is_sparse:
-            # For sparse matrices: focus on cloning + local search
-            target_offspring = min(GA_PARAMS["OFFSPRING_SIZE"], len(population) * 3)
-            max_attempts = target_offspring * 10
-        else:
-            # For dense matrices: normal GA
-            target_offspring = GA_PARAMS["OFFSPRING_SIZE"]
-            max_attempts = target_offspring * 100
+        # In sparse graphs: fewer valid children per attempt → reduce target, raise attempts a bit
+        target = (
+            min(GA.OFFSPRING_SIZE, len(population) * 3)
+            if self.is_sparse
+            else GA.OFFSPRING_SIZE
+        )
+        max_attempts = target * (10 if self.is_sparse else 100)
 
         attempts = 0
-
-        # Generate offspring
-        while len(offspring) < target_offspring and attempts < max_attempts:
+        while len(offspring) < target and attempts < max_attempts:
             attempts += 1
-
-            parent1 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
-            parent2 = tournament_selection(population, GA_PARAMS["TOURNAMENT_K"])
+            p1 = tournament_selection(population, GA.TOURNAMENT_K)
+            p2 = tournament_selection(population, GA.TOURNAMENT_K)
 
             if self.is_sparse:
                 if random.random() < 0.4:
-                    child = crossover_sparse_aware(
-                        problem, parent1, parent2
-                    )  # evaluates inside
+                    child = crossover_sparse_aware(problem, p1, p2)  # evaluated inside
                 else:
-                    better = parent1 if parent1.fitness < parent2.fitness else parent2
+                    better = p1 if p1.fitness < p2.fitness else p2
                     child = Individual(
                         tour=np.copy(better.tour), mutation_rate=better.mutation_rate
                     )
                     child.fitness = better.fitness
 
-                # Tag parents BEFORE/AFTER mutation; doesn't matter, but must exist
-                child._p1_fitness = parent1.fitness
-                child._p2_fitness = parent2.fitness
-
-                mutation_sparse_aware(child, problem)  # may re-evaluate
+                # Store parent fitness for "beats-parent" 2-opt trigger
+                child._p1_fitness, child._p2_fitness = p1.fitness, p2.fitness
+                mutation_sparse_aware(child, problem)  # re-evaluates as needed
 
             else:
-                if random.random() < GA_PARAMS["CROSSOVER_PROB"]:
-                    child = recombination(problem, parent1, parent2)
-                else:
-                    child = Individual(
-                        tour=np.copy(parent1.tour), mutation_rate=parent1.mutation_rate
+                child = (
+                    recombination(problem, p1, p2)
+                    if random.random() < GA.CROSSOVER_PROB
+                    else Individual(
+                        tour=np.copy(p1.tour), mutation_rate=p1.mutation_rate
                     )
-
+                )
                 if diversity is not None:
                     adaptive_mutation_rate(child, diversity)
 
                 mutation(child)
                 child.evaluate(problem)
+                child._p1_fitness, child._p2_fitness = p1.fitness, p2.fitness
 
-                # Tag parents (needed for "beats parent" criterion)
-                child._p1_fitness = parent1.fitness
-                child._p2_fitness = parent2.fitness
-
-            if not np.isinf(child.fitness):
+            if np.isfinite(child.fitness):
                 offspring.append(child)
 
-        # Fallback cloning
+        # If offspring generation struggled, clone to keep selection/elimination stable
         min_offspring = max(3, len(population))
-        cloned_count = 0
-        while len(offspring) < min_offspring and len(population) > 0:
-            parent = random.choice(population)
-            clone = Individual(
-                tour=np.copy(parent.tour), mutation_rate=parent.mutation_rate
-            )
-            clone.fitness = parent.fitness
-
-            # Optional: tag parents so near-best criterion still works fine either way
-            clone._p1_fitness = parent.fitness
-            clone._p2_fitness = parent.fitness
-
+        cloned = 0
+        while len(offspring) < min_offspring and population:
+            p = random.choice(population)
+            clone = Individual(tour=np.copy(p.tour), mutation_rate=p.mutation_rate)
+            clone.fitness = p.fitness
+            clone._p1_fitness = clone._p2_fitness = p.fitness
             offspring.append(clone)
-            cloned_count += 1
+            cloned += 1
 
-        if generation % 20 == 0 and (
-            len(offspring) < target_offspring or cloned_count > 0
-        ):
+        if generation % 20 == 0 and (len(offspring) < target or cloned):
             logger.info(
-                f"  Gen {generation}: Generated {len(offspring) - cloned_count}/{target_offspring} "
-                f"offspring, cloned {cloned_count}"
+                f"  Gen {generation}: Generated {len(offspring) - cloned}/{target} offspring, cloned {cloned}"
             )
 
-        # Apply 2-opt (crucial for sparse matrices!)
-        if offspring and GA_PARAMS.get("LOCAL_SEARCH_ENABLED", False):
+        # 2-opt is expensive; apply selectively where it likely pays off
+        if offspring and GA.LOCAL_SEARCH_ENABLED:
             apply_two_opt_to_offspring_when_it_matters(
                 offspring,
                 problem,
-                max_iters=GA_PARAMS["LOCAL_SEARCH_MAX_ITERS"],
-                pop_best_fitness=pop_best_fitness,
-                # best_overall_fitness=best_overall_fitness,
+                max_iters=GA.LOCAL_SEARCH_MAX_ITERS,
+                pop_best_fitness=pop_best,
             )
 
         return offspring
 
-    def _report_and_check(
-        self, generation_mean_fitness: float, generation_best: Individual
-    ) -> float:
-        """
-        Report generation statistics and check time remaining.
-
-        Args:
-            generation_mean_fitness: Mean fitness of generation
-            generation_best: Best individual in generation
-
-        Returns:
-            Time remaining in seconds (negative if exceeded)
-        """
-        return self.reporter.report(
-            generation_mean_fitness, generation_best.fitness, generation_best.tour
+    def _log_population_stats(self, population: List[Individual], label: str) -> None:
+        """Quick snapshot: mean/best/worst fitness."""
+        fits = [ind.fitness for ind in population]
+        print_stats_table(
+            {
+                "Mean": float(np.mean(fits)),
+                "Best": float(np.min(fits)),
+                "Worst": float(np.max(fits)),
+            }
         )
-
-    def _log_population_stats(self, population: List[Individual], label: str):
-        """Log population statistics."""
-        fitnesses = [ind.fitness for ind in population]
-        mean_fitness = float(np.mean(fitnesses))
-        best_fitness = float(np.min(fitnesses))
-        worst_fitness = float(np.max(fitnesses))
-
-        stats = {
-            "Mean": mean_fitness,
-            "Best": best_fitness,
-            "Worst": worst_fitness,
-        }
-        print_stats_table(stats)
 
 
 if __name__ == "__main__":
