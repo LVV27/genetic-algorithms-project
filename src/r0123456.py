@@ -3,22 +3,25 @@ import logging
 import os
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 import copy
-
 import numpy as np
-
 import numba
 
+
 # ==============================================================
-# LOGGING
+# LOGGING CONFIGURATION
 # ==============================================================
 
 
 class ProfessionalFormatter(logging.Formatter):
-    """Minimal, readable log styling per severity level."""
+    """
+    Custom log formatter with severity-specific styling.
+
+    Provides clean, readable output with emoji indicators for warnings/errors.
+    """
 
     FORMATS = {
         logging.INFO: "%(message)s",
@@ -33,7 +36,7 @@ class ProfessionalFormatter(logging.Formatter):
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-logger.handlers = []  # reset handlers when re-running in notebooks/IDEs
+logger.handlers = []  # Reset handlers when re-running in notebooks/IDEs
 
 _handler = logging.StreamHandler()
 _handler.setFormatter(ProfessionalFormatter())
@@ -42,57 +45,107 @@ logger.propagate = False
 
 
 # ==============================================================
-# GA PARAMETERS (single source of truth)
+# ALGORITHM PARAMETERS (Single Source of Truth)
 # ==============================================================
 
 
 @dataclass(frozen=True)
 class GAParams:
-    # Population
-    POPULATION_SIZE: int = 100  # λ
-    OFFSPRING_SIZE: int = 100  # μ
-    GENERATIONS: int = 10_000_000
+    """
+    Centralized configuration for the Genetic Algorithm.
 
-    # Selection
-    TOURNAMENT_K: int = 7
+    All algorithm behavior is controlled through these parameters,
+    making it easy to tune and document the approach for defense.
+    """
 
-    # Mutation (self-adaptive within [min, max])
-    MUTATION_ALPHA_MIN: float = 0.04
-    MUTATION_ALPHA_MAX: float = 0.12
-    DIVERSITY_CHECK_INTERVAL: int = 5
+    # ===== Population Parameters =====
+    POPULATION_SIZE: int = 100  # λ (lambda) - population size
+    OFFSPRING_SIZE: int = 100  # μ (mu) - offspring per generation
+    GENERATIONS: int = (
+        10_000_000  # Maximum generations (usually terminated by time limit)
+    )
 
-    # Crossover
-    CROSSOVER_PROB: float = 0.8
+    # ===== Selection Parameters =====
+    TOURNAMENT_K: int = (
+        7  # Tournament size for parent selection (larger = more selective)
+    )
 
-    # Greedy seeding
-    GREEDY_SEED_COUNT: int = 5
-    GREEDY_RESTARTS: int = 100
+    # ===== Mutation Parameters =====
+    # Self-adaptive mutation rate bounds
+    MUTATION_ALPHA_MIN: float = 0.04  # Minimum mutation rate (exploitation)
+    MUTATION_ALPHA_MAX: float = 0.12  # Maximum mutation rate (exploration)
+    DIVERSITY_CHECK_INTERVAL: int = (
+        5  # How often to measure diversity for adaptive mutation
+    )
 
-    # Local search (2-opt and 3-opt)
+    # ===== Crossover Parameters =====
+    CROSSOVER_PROB: float = 0.8  # Probability of crossover vs. cloning
+    ERX_PROB_SPARSE: float = 0.15  # Probability of using ERX in sparse graphs
+
+    # ===== Initialization Parameters =====
+    GREEDY_SEED_COUNT: int = 5  # Number of best greedy solutions to seed population
+    GREEDY_RESTARTS: int = (
+        100  # Number of different start cities for greedy construction
+    )
+
+    # ===== Local Search Parameters =====
     LOCAL_SEARCH_ENABLED: bool = True
-    LOCAL_SEARCH_MAX_ITERS: int = 1
+    LOCAL_SEARCH_MAX_ITERS: int = 1  # Max iterations per 2-opt application
 
-    # When to apply 2-opt (keep it selective to save time)
-    LSO_APPLY_IF_BEATS_ANY_PARENT: bool = True
-    LSO_NEAR_BEST_FRAC: float = 0.01
-    LSO_ALWAYS_IMPROVE_TOP_K: int = 2
-    LSO_LOG_COUNTS: bool = False
+    # When to apply 2-opt (selective to save computation)
+    LSO_APPLY_IF_BEATS_ANY_PARENT: bool = True  # Apply if offspring beats a parent
+    LSO_NEAR_BEST_FRAC: float = 0.01  # Apply if within 1% of best
+    LSO_ALWAYS_IMPROVE_TOP_K: int = 2  # Always apply to top K offspring
+    LSO_LOG_COUNTS: bool = False  # Log how many get local search
 
-    # Diversity preservation
-    USE_CROWDING: bool = True
-    DIVERSITY_PRESERVATION: float = 0.3
+    # ===== Diversity Preservation =====
+    USE_CROWDING: bool = True  # Use deterministic crowding for survivor selection
+    DIVERSITY_PRESERVATION: float = 0.3  # Fraction of population selected for diversity
+
+    # ===== Sparse Graph Strategy =====
+    SPARSITY_THRESHOLD: float = 0.1  # Fraction of inf edges to trigger sparse mode
+    SPARSE_OFFSPRING_TARGET_MULTIPLIER: int = (
+        3  # Target * this = max attempts in sparse graphs
+    )
+    SPARSE_MIN_OFFSPRING_FACTOR: int = 3  # Minimum offspring = max(3, pop_size / this)
+
+    # ===== Perturbation Parameters =====
+    # Used during initialization to diversify from greedy seeds
+    PERTURB_LIGHT_SWAPS: int = 200  # Divisor: n // this = number of swaps for light
+    PERTURB_MEDIUM_SWAPS: int = 100  # Divisor: n // this = number of swaps for medium
+    PERTURB_HEAVY_SWAPS: int = 50  # Divisor: n // this = number of swaps for heavy
+    PERTURB_HEAVY_ITERATIONS: int = 2  # Number of perturbations for heavy mode
+
+    # ===== Repair Parameters =====
+    MAX_REPAIR_ATTEMPTS: int = 100  # Maximum attempts to fix invalid tour
+    PERTURBATION_MAX_ATTEMPTS_MULTIPLIER: int = 50  # Max attempts = needed * this
+
+    # ===== Large Neighborhood Search (LNS) Parameters =====
+    LNS_STALL_THRESHOLD: int = 80  # Apply LNS after this many stagnant generations
+    LNS_CHECK_INTERVAL: int = 20  # Check every N generations when stalled
+    LNS_NUM_RESTARTS: int = 20  # Number of LNS restart attempts
+    LNS_2OPT_ITERS: int = 30  # 2-opt iterations after LNS reconstruction
+    LNS_DESTROY_FRACTION: float = 0.4  # Fraction of tour to destroy/rebuild
+    LNS_ACCEPTANCE_UPHILL_DELTA: int = (
+        100  # Accept uphill moves up to this delta when stalled
+    )
+    LNS_ACCEPTANCE_STALL_THRESHOLD: int = 200  # Only accept uphill if stalled this long
+
+    # ===== Logging Parameters =====
+    LOG_INTERVAL: int = 10  # Print statistics every N generations
+    LOG_SPARSE_OFFSPRING_STATS_INTERVAL: int = 20  # Log offspring generation stats
 
 
 GA = GAParams()
 
 
 # ==============================================================
-# SMALL PRINT HELPERS
+# CONSOLE OUTPUT HELPERS
 # ==============================================================
 
 
 def print_section(title: str, width: int = 70) -> None:
-    """Console-friendly divider for stages (init/evolution/results)."""
+    """Print a formatted section header for console output."""
     logger.info("")
     logger.info("─" * width)
     logger.info(f" {title}")
@@ -100,11 +153,12 @@ def print_section(title: str, width: int = 70) -> None:
 
 
 def print_stats_table(stats: dict) -> None:
-    """Pretty-print a dict of stats with aligned columns."""
+    """Print a dictionary of statistics with aligned columns."""
     for k, v in stats.items():
-        logger.info(
-            f"  {k:<30} {v:>12.2f}" if isinstance(v, float) else f"  {k:<30} {v:>12}"
-        )
+        if isinstance(v, float):
+            logger.info(f"  {k:<30} {v:>12.2f}")
+        else:
+            logger.info(f"  {k:<30} {v:>12}")
 
 
 # ==============================================================
@@ -114,15 +168,13 @@ def print_stats_table(stats: dict) -> None:
 
 class TravelingSalesmanProblem:
     """
-    Traveling Salesman Problem (TSP) instance wrapper.
+    TSP instance wrapper.
 
-    Stores:
-    - A distance matrix
-    - Basic metadata
-    - Optional known heuristic benchmark values for sanity checks
+    Stores the distance matrix and provides convenient access methods.
+    Includes optional benchmark values for validation.
     """
 
-    # Optional benchmark "known good" values (for quick sanity checks)
+    # Known heuristic values for standard benchmarks (for validation)
     HEURISTIC_VALUES = {
         "tour50.csv": 15665,
         "tour250.csv": 87874,
@@ -140,14 +192,15 @@ class TravelingSalesmanProblem:
         self.num_cities = distance_matrix.shape[0]
         self.filename = filename
 
+        # Precompute feasibility matrix for faster sparse graph handling
+        self.feasible = np.isfinite(distance_matrix)
+
     def get_distance(self, city_a: int, city_b: int) -> float:
         """Return the distance between two cities."""
         return self.distance_matrix[city_a, city_b]
 
     def print_info(self) -> None:
-        """
-        Print instance metadata and (if available) a known heuristic target.
-        """
+        """Print instance metadata and known benchmark if available."""
         print_section("PROBLEM INSTANCE")
 
         stats = {
@@ -163,7 +216,7 @@ class TravelingSalesmanProblem:
 
 
 # ==============================================================
-# INDIVIDUAL (solution representation)
+# INDIVIDUAL (Solution Representation)
 # ==============================================================
 
 
@@ -172,9 +225,9 @@ class Individual:
     A candidate TSP solution.
 
     Attributes:
-    - tour: permutation of city indices
-    - mutation_rate: per-individual mutation strength
-    - fitness: total tour length (lower is better)
+        tour: Permutation of city indices representing the route
+        mutation_rate: Self-adaptive parameter controlling mutation strength
+        fitness: Total tour length (lower is better, None if not evaluated)
     """
 
     def __init__(
@@ -190,10 +243,10 @@ class Individual:
             self.tour = np.random.permutation(problem.num_cities)
         else:
             raise ValueError(
-                "Either `problem` (random initialization) or `tour` must be provided."
+                "Either `problem` (for random init) or `tour` must be provided."
             )
 
-        # Initialize mutation rate
+        # Initialize mutation rate within allowed bounds
         if mutation_rate is None:
             self.mutation_rate = random.uniform(
                 GA.MUTATION_ALPHA_MIN,
@@ -205,96 +258,54 @@ class Individual:
         self.fitness: Optional[float] = None
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
-        # self.fitness = evaluate_tour_no_numba(self=self, problem=problem)
+        """
+        Evaluate tour fitness using Numba-accelerated distance calculation.
+
+        Returns:
+            Total tour length, or np.inf if tour contains invalid edges
+        """
         self.fitness = evaluate_tour_numba(self.tour, problem.distance_matrix)
         return self.fitness
 
 
-def evaluate_tour_no_numba(self, problem: TravelingSalesmanProblem) -> float:
-    """
-    Compute and store the total tour length.
-
-    Returns:
-        Total distance of the tour, or np.inf if an edge is invalid.
-    """
-    num_cities = len(self.tour)
-    total_distance = 0.0
-
-    for index in range(num_cities):
-        city = int(self.tour[index])
-        next_city = int(self.tour[(index + 1) % num_cities])
-
-        distance = problem.get_distance(city, next_city)
-        if np.isinf(distance):
-            self.fitness = np.inf
-            return self.fitness
-
-        total_distance += distance
-
-    self.fitness = total_distance
-    return total_distance
-
-
 @numba.njit(cache=True)
 def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
+    """
+    Compute total tour length efficiently using Numba JIT compilation.
+
+    Returns np.inf if any edge is invalid (infinite distance).
+    """
     total = 0.0
     n = tour.shape[0]
 
     for i in range(n):
-        a = tour[i]
-        b = tour[(i + 1) % n]
-        d = distance_matrix[a, b]
+        city_a = tour[i]
+        city_b = tour[(i + 1) % n]
+        distance = distance_matrix[city_a, city_b]
 
-        if np.isinf(d):
+        if np.isinf(distance):
             return np.inf
 
-        total += d
+        total += distance
 
     return total
 
 
 # ==============================================================
-# DIVERSITY HELPERS
+# DIVERSITY MEASUREMENT
 # ==============================================================
 
 
-def find_most_similar(
-    individual: Individual,
-    population: List[Individual],
-) -> Optional[Individual]:
-    """
-    Find the individual in the population with the closest fitness value.
-
-    This is a cheap proxy for similarity (crowding):
-    individuals with similar fitness are assumed to be similar solutions.
-    """
-    if not population:
-        return None
-
-    fitness_differences = [
-        abs(individual.fitness - other.fitness) for other in population
-    ]
-
-    most_similar_index = int(np.argmin(fitness_differences))
-    return population[most_similar_index]
-
-
-def population_diversity(population: List[Individual]) -> float:
-    """
-    Measure population diversity as the fraction of unique tours.
-
-    Exact tour matches are considered duplicates.
-    Returns a value in [0, 1].
-    """
-    if not population:
-        return 0.0
-
-    unique_tours = {tuple(individual.tour) for individual in population}
-
-    return len(unique_tours) / len(population)
-
-
 def edge_diversity(population: List[Individual]) -> float:
+    """
+    Measure edge-level diversity across the population.
+
+    Counts unique edges used across all tours (treating edges as undirected).
+    Higher values indicate more diverse routing patterns.
+
+    Returns:
+        Fraction of possible edge occurrences that are unique
+    """
     if not population:
         return 0.0
 
@@ -307,32 +318,63 @@ def edge_diversity(population: List[Individual]) -> float:
         for i in range(n):
             a = tour[i]
             b = tour[(i + 1) % n]
+            # Store both directions (undirected edge)
             edges.add((a, b))
-            edges.add((b, a))  # undirected
+            edges.add((b, a))
         edge_sets.append(edges)
 
+    # Union of all edges used
     union_edges = set.union(*edge_sets)
+
+    # Maximum possible: each individual uses n edges * 2 directions
     max_edges = len(population) * n * 2
 
     return len(union_edges) / max_edges
 
 
+def find_most_similar(
+    individual: Individual,
+    population: List[Individual],
+) -> Optional[Individual]:
+    """
+    Find the individual in the population with closest fitness value.
+
+    This is a computationally cheap proxy for tour similarity,
+    used in deterministic crowding for diversity preservation.
+    """
+    if not population:
+        return None
+
+    fitness_differences = [
+        abs(individual.fitness - other.fitness) for other in population
+    ]
+
+    most_similar_index = int(np.argmin(fitness_differences))
+    return population[most_similar_index]
+
 
 # ==============================================================
-# POPULATION INITIALIZATION (sparse-aware)
+# POPULATION INITIALIZATION
 # ==============================================================
 
 
 def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
+    """
+    Apply double-bridge perturbation (effective for escaping local optima).
+
+    Splits tour into 4 segments and reconnects them in a different order.
+    """
     n = len(tour)
     if n < 8:
         return tour.copy()
 
+    # Choose 3 cut points to create 4 segments
     p1, p2, p3 = sorted(random.sample(range(1, n), 3))
     return np.concatenate([tour[:p1], tour[p2:p3], tour[p1:p2], tour[p3:]])
 
 
 def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
+    """Apply k random city swaps to the tour."""
     tour = tour.copy()
     n = len(tour)
     for _ in range(k):
@@ -342,6 +384,7 @@ def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
 
 
 def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
+    """Reverse a random contiguous segment of the tour."""
     tour = tour.copy()
     i, j = sorted(random.sample(range(len(tour)), 2))
     tour[i : j + 1] = tour[i : j + 1][::-1]
@@ -349,57 +392,76 @@ def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
 
 
 def apply_perturbation(tour: np.ndarray, strength: str) -> np.ndarray:
+    """
+    Apply perturbation of specified strength to diversify the tour.
+
+    Args:
+        tour: Original tour
+        strength: 'light', 'medium', or 'heavy'
+
+    Returns:
+        Perturbed tour
+    """
     n = len(tour)
 
     if strength == "light":
-        return perturb_multi_swap(tour, max(1, n // 200))
+        k = max(1, n // GA.PERTURB_LIGHT_SWAPS)
+        return perturb_multi_swap(tour, k)
 
     if strength == "medium":
+        k = max(2, n // GA.PERTURB_MEDIUM_SWAPS)
         return random.choice(
             [
                 lambda t: perturb_double_bridge(t),
-                lambda t: perturb_multi_swap(t, max(2, n // 100)),
+                lambda t: perturb_multi_swap(t, k),
                 lambda t: perturb_segment_reverse(t),
             ]
         )(tour)
 
-    # heavy
-    t = tour.copy()
-    for _ in range(2):
-        t = random.choice(
+    # Heavy perturbation: apply multiple operations
+    result = tour.copy()
+    k = max(3, n // GA.PERTURB_HEAVY_SWAPS)
+    for _ in range(GA.PERTURB_HEAVY_ITERATIONS):
+        result = random.choice(
             [
                 perturb_double_bridge,
-                lambda x: perturb_multi_swap(x, max(3, n // 50)),
+                lambda x: perturb_multi_swap(x, k),
                 perturb_segment_reverse,
             ]
-        )(t)
-    return t
+        )(result)
+    return result
 
 
 def repair_tour(
     problem: TravelingSalesmanProblem,
     tour: np.ndarray,
-    max_repairs: int = 100,
-) -> np.ndarray | None:
+) -> Optional[np.ndarray]:
     """
-    Attempt to repair a tour by fixing invalid (inf) edges via local swaps.
-    Returns a repaired tour or None if repair fails.
+    Attempt to repair a tour containing invalid (infinite) edges.
+
+    Strategy: For each invalid edge, try swapping with later cities
+    until a valid configuration is found.
+
+    Returns:
+        Repaired tour if successful, None if repair fails
     """
     tour = tour.copy()
     n = len(tour)
 
-    for _ in range(max_repairs):
+    for _ in range(GA.MAX_REPAIR_ATTEMPTS):
         repaired_any = False
 
         for i in range(n):
             a = tour[i]
             b = tour[(i + 1) % n]
 
+            # Check if current edge is invalid
             if not np.isfinite(problem.get_distance(a, b)):
                 # Try swapping b with a later city c
                 for j in range(i + 2, n):
                     c = tour[j]
 
+                    # Check if new edges would be valid
                     if np.isfinite(problem.get_distance(a, c)) and np.isfinite(
                         problem.get_distance(c, b)
                     ):
@@ -408,12 +470,12 @@ def repair_tour(
                         break
 
                 if not repaired_any:
-                    return None  # unrecoverable edge
+                    return None  # Unrecoverable edge
 
         if not repaired_any:
-            return tour  # fully repaired
+            return tour  # Fully repaired
 
-    return None
+    return None  # Max attempts exceeded
 
 
 def fill_with_perturbations(
@@ -421,10 +483,21 @@ def fill_with_perturbations(
     base_population: List[Individual],
     target_size: int,
 ) -> int:
+    """
+    Fill population by creating perturbed copies of existing good solutions.
+
+    Uses top 50% of population as templates and applies various perturbations.
+    Ensures all generated individuals are valid (finite fitness).
+
+    Returns:
+        Number of individuals added
+    """
     added = 0
     attempts = 0
-    max_attempts = (target_size - len(base_population)) * 50
+    needed = target_size - len(base_population)
+    max_attempts = needed * GA.PERTURBATION_MAX_ATTEMPTS_MULTIPLIER
 
+    # Use top half as templates
     templates = sorted(base_population, key=lambda ind: ind.fitness)
     templates = templates[: max(1, len(templates) // 2)]
 
@@ -432,16 +505,20 @@ def fill_with_perturbations(
         attempts += 1
         parent = random.choice(templates)
 
+        # Choose perturbation strength with decreasing probability
         strength = random.choices(
             ["light", "medium", "heavy"],
             weights=[0.4, 0.4, 0.2],
             k=1,
         )[0]
 
+        # is this not just overriding the params
+
         tour = apply_perturbation(parent.tour, strength)
         ind = Individual(tour=tour, mutation_rate=parent.mutation_rate)
         ind.evaluate(problem)
 
+        # Attempt repair if invalid
         if not np.isfinite(ind.fitness):
             repaired = repair_tour(problem, tour)
             if repaired is None:
@@ -461,10 +538,12 @@ def nearest_neighbor_greedy(
     start_city: int = 0,
 ) -> Optional[np.ndarray]:
     """
-    Build a tour using the nearest-neighbor heuristic.
+    Construct a tour using the nearest-neighbor heuristic.
 
-    Starting from `start_city`, repeatedly choose the closest *unvisited* city.
-    Returns None if the tour cannot be completed due to missing/infinite edges.
+    Starting from start_city, repeatedly visit the closest unvisited city.
+
+    Returns:
+        Complete tour, or None if construction fails (sparse graph)
     """
     num_cities = problem.num_cities
     unvisited = set(range(num_cities))
@@ -477,13 +556,14 @@ def nearest_neighbor_greedy(
         best_next_city: Optional[int] = None
         best_distance = float("inf")
 
+        # Find nearest unvisited city
         for candidate in unvisited:
             distance = problem.get_distance(current_city, candidate)
             if distance < best_distance:
                 best_distance = distance
                 best_next_city = candidate
 
-        # If we can't move anywhere (or only missing edges remain), fail.
+        # If no valid edge exists, construction fails
         if best_next_city is None or np.isinf(best_distance):
             return None
 
@@ -499,8 +579,9 @@ def generate_greedy_candidates(
     restart_budget: int,
 ) -> List[Individual]:
     """
-    Generate greedy nearest-neighbor tours from many start cities.
-    Only valid (finite) tours are returned.
+    Generate multiple greedy tours from different starting cities.
+
+    Only valid (finite fitness) tours are returned.
     """
     n = problem.num_cities
     starts = random.sample(range(n), k=min(n, restart_budget))
@@ -524,13 +605,15 @@ def generate_greedy_candidates(
 def select_best_unique_seeds(
     candidates: List[Individual],
     seed_target: int,
-) -> tuple[List[Individual], set]:
+) -> Tuple[List[Individual], Set]:
     """
-    Select the best unique tours (by exact sequence).
-    Returns selected individuals and the set of seen tour keys.
+    Select the best unique tours (no duplicates).
+
+    Returns:
+        Tuple of (selected individuals, set of tour keys for deduplication)
     """
     seeds: List[Individual] = []
-    seen_keys: set = set()
+    seen_keys: Set = set()
 
     for ind in sorted(candidates, key=lambda x: x.fitness):
         key = tuple(ind.tour.tolist())
@@ -552,8 +635,12 @@ def clone_to_size(
     target_size: int,
 ) -> int:
     """
-    Clone existing individuals until population reaches target_size.
-    Returns number of clones added.
+    Clone existing individuals (with deep copy) until target size is reached.
+
+    Used as last resort when other initialization methods don't produce enough individuals.
+
+    Returns:
+        Number of clones added
     """
     if not population:
         return 0
@@ -574,9 +661,17 @@ def initialize_population_greedy_sparse_aware(
     problem: TravelingSalesmanProblem,
     population_size: int,
 ) -> List[Individual]:
-    # --------------------------------------------------------------
-    # 1) Generate greedy seeds
-    # --------------------------------------------------------------
+    """
+    Initialize population using a multi-stage strategy:
+
+    1. Generate many greedy nearest-neighbor tours from different start cities
+    2. Select the best unique tours as seeds
+    3. Create diversity by perturbing these seeds
+    4. Clone only if necessary to reach target size
+
+    This approach works well for both dense and sparse graphs.
+    """
+    # Stage 1: Generate greedy seeds
     greedy_candidates = generate_greedy_candidates(
         problem,
         restart_budget=max(GA.GREEDY_RESTARTS, population_size * 20),
@@ -590,32 +685,26 @@ def initialize_population_greedy_sparse_aware(
     greedy_count = len(population)
 
     if greedy_count == 0:
-        raise RuntimeError("No valid greedy tours found")
+        raise RuntimeError("No valid greedy tours found - graph may be disconnected")
 
-    # --------------------------------------------------------------
-    # 2) Fill with perturbations of greedy solutions
-    # --------------------------------------------------------------
+    # Stage 2: Fill with perturbations
     perturb_count = fill_with_perturbations(
         problem,
         population,
         population_size,
     )
 
-    # --------------------------------------------------------------
-    # 3) Clone only if absolutely necessary
-    # --------------------------------------------------------------
+    # Stage 3: Clone only if absolutely necessary
     clone_count = 0
     if len(population) < population_size:
         clone_count = clone_to_size(population, population_size)
 
-    # --------------------------------------------------------------
-    # 4) Logging
-    # --------------------------------------------------------------
+    # Log initialization summary
     logger.info(
         f"Initialized {len(population)} individuals "
         f"({greedy_count} greedy, "
         f"{perturb_count} perturbations, "
-        f"{clone_count} clone)"
+        f"{clone_count} clones)"
     )
 
     return population
@@ -633,8 +722,8 @@ def tournament_selection(
     """
     Select one individual using tournament selection.
 
-    A subset of `tournament_size` individuals is sampled uniformly at random
-    from the population. The individual with the best (lowest) fitness wins.
+    Randomly sample tournament_size individuals and return the best.
+    Larger tournament size increases selection pressure.
     """
     competitors = random.sample(population, tournament_size)
     winner = min(competitors, key=lambda ind: ind.fitness)
@@ -647,19 +736,23 @@ def tournament_selection(
 
 
 def mutation_swap(tour: np.ndarray) -> None:
-    """Swap two random cities."""
+    """Swap two random cities in-place."""
     i, j = random.sample(range(len(tour)), 2)
     tour[i], tour[j] = tour[j], tour[i]
 
 
 def mutation_inversion(tour: np.ndarray) -> None:
-    """Reverse a random contiguous segment."""
+    """Reverse a random contiguous segment in-place."""
     start, end = sorted(random.sample(range(len(tour)), 2))
     tour[start : end + 1] = tour[start : end + 1][::-1]
 
 
 def mutation_insertion(individual: Individual) -> None:
-    """Remove one city and insert it at another position."""
+    """
+    Remove one city and insert it at another position.
+
+    This is a more disruptive mutation than swap or inversion.
+    """
     tour = individual.tour
     n = len(tour)
 
@@ -678,8 +771,10 @@ def mutation_insertion(individual: Individual) -> None:
 
 def mutation(individual: Individual) -> None:
     """
-    Apply a mutation to an individual using a weighted operator mix.
-    Mutation happens with probability = individual.mutation_rate.
+    Apply mutation to an individual using weighted operator selection.
+
+    Mutation occurs with probability = individual.mutation_rate.
+    Operator weights favor inversion (good for TSP) over swap and insertion.
     """
     if random.random() >= individual.mutation_rate:
         return
@@ -702,10 +797,11 @@ def mutation_sparse_aware(
     problem: TravelingSalesmanProblem,
 ) -> None:
     """
-    Apply mutation while ensuring the result remains a valid tour.
+    Apply mutation while ensuring validity for sparse graphs.
 
-    For sparse graphs (many missing edges), mutations often create invalid tours.
-    This function retries several times, keeping the first valid mutation.
+    In sparse graphs, random mutations often create invalid tours.
+    This function tries multiple mutations and keeps the first valid one.
+    Falls back to original tour if all attempts fail.
     """
     if random.random() >= individual.mutation_rate:
         return
@@ -713,25 +809,25 @@ def mutation_sparse_aware(
     original_tour = individual.tour.copy()
     original_fitness = individual.fitness
 
-    max_attempts = 100
-
-    for _ in range(max_attempts):
+    for _ in range(GA.MAX_REPAIR_ATTEMPTS):
         operator = random.choice(["swap", "double_swap", "inversion"])
 
         if operator == "swap":
             mutation_swap(individual.tour)
 
         elif operator == "double_swap":
+            # Two swaps can escape local optima better
             mutation_swap(individual.tour)
             mutation_swap(individual.tour)
 
-        else:  # inversion with size guard
+        else:  # Inversion with size constraint
             start, end = sorted(random.sample(range(len(individual.tour)), 2))
+            # Avoid very large inversions which are more likely to be invalid
             if end - start > len(individual.tour) // 3:
                 continue
             individual.tour[start : end + 1] = individual.tour[start : end + 1][::-1]
 
-        # Keep mutation if it produces a valid (finite) tour
+        # Keep mutation if it produces a valid tour
         if np.isfinite(individual.evaluate(problem)):
             return
 
@@ -740,8 +836,33 @@ def mutation_sparse_aware(
         individual.fitness = original_fitness
 
 
+def adaptive_mutation_rate(
+    individual: Individual,
+    diversity: float,
+) -> None:
+    """
+    Adapt individual's mutation rate based on population diversity.
+
+    Strategy:
+        - Low diversity → increase mutation rate (explore more)
+        - High diversity → decrease mutation rate (exploit more)
+
+    Mutation rate is always clamped to configured bounds.
+    """
+    min_rate = GA.MUTATION_ALPHA_MIN
+    max_rate = GA.MUTATION_ALPHA_MAX
+
+    base_rate = (min_rate + max_rate) / 2.0
+
+    # Diversity adjustment: lower diversity increases mutation
+    adjustment = (1.0 - diversity) * 0.5
+
+    new_rate = base_rate + adjustment
+    individual.mutation_rate = float(np.clip(new_rate, min_rate, max_rate))
+
+
 # ==============================================================
-# CROSSOVER
+# CROSSOVER OPERATORS
 # ==============================================================
 
 
@@ -751,23 +872,24 @@ def order_crossover(
     parent_b: Individual,
 ) -> Individual:
     """
-    Order-based crossover (OX-style).
+    Order Crossover (OX) for permutation representation.
 
-    Steps:
-      1) Copy a contiguous slice from parent_a.
-      2) Fill remaining positions using parent_b's order,
-         skipping cities already used.
+    Strategy:
+        1. Copy a contiguous segment from parent_a
+        2. Fill remaining positions using parent_b's city order
+
+    This preserves relative city order from parents while creating new tours.
     """
     num_cities = problem.num_cities
     start, end = sorted(random.sample(range(num_cities), 2))
 
     child_tour = np.full(num_cities, -1, dtype=int)
 
-    # 1) Copy slice from first parent
+    # Copy segment from first parent
     child_tour[start : end + 1] = parent_a.tour[start : end + 1]
     used_cities = set(child_tour[start : end + 1])
 
-    # 2) Fill remaining slots using the second parent's order
+    # Fill remaining positions from second parent
     remaining_cities = [city for city in parent_b.tour if city not in used_cities]
 
     fill_index = 0
@@ -783,40 +905,41 @@ def order_crossover(
 
 
 # ==============================================================
-# EDGE-AWARE CROSSOVER (ERX) — SPARSE-AWARE
+# EDGE RECOMBINATION CROSSOVER (for sparse graphs)
 # ==============================================================
 
 
 def _cyclic_neighbors(tour: np.ndarray) -> Dict[int, Set[int]]:
     """
-    Build an undirected adjacency table from a tour.
-    For each city, include its predecessor and successor (cyclic).
+    Build adjacency table from a tour.
+
+    Each city maps to its immediate predecessor and successor (cyclic).
     """
     n = len(tour)
-    adj: Dict[int, Set[int]] = {int(c): set() for c in tour}
+    adjacency: Dict[int, Set[int]] = {int(c): set() for c in tour}
 
     for i in range(n):
         city = int(tour[i])
         left = int(tour[(i - 1) % n])
         right = int(tour[(i + 1) % n])
-        adj[city].add(left)
-        adj[city].add(right)
+        adjacency[city].add(left)
+        adjacency[city].add(right)
 
-    return adj
+    return adjacency
 
 
-def _merge_edge_tables(p1: np.ndarray, p2: np.ndarray) -> Dict[int, Set[int]]:
-    """Union of neighbor sets from both parents."""
-    a1 = _cyclic_neighbors(p1)
-    a2 = _cyclic_neighbors(p2)
-    merged = {city: set(a1[city]) | set(a2[city]) for city in a1.keys()}
+def _merge_edge_tables(tour1: np.ndarray, tour2: np.ndarray) -> Dict[int, Set[int]]:
+    """Merge adjacency tables from both parents."""
+    adj1 = _cyclic_neighbors(tour1)
+    adj2 = _cyclic_neighbors(tour2)
+    merged = {city: set(adj1[city]) | set(adj2[city]) for city in adj1.keys()}
     return merged
 
 
 def _remove_city_from_all(edge_table: Dict[int, Set[int]], city: int) -> None:
-    """When a city is used, remove it from every neighbor list."""
-    for nbrs in edge_table.values():
-        nbrs.discard(city)
+    """Remove a city from all adjacency lists (it's been visited)."""
+    for neighbors in edge_table.values():
+        neighbors.discard(city)
 
 
 def _feasible_neighbors(
@@ -824,7 +947,7 @@ def _feasible_neighbors(
     current: int,
     candidates: Set[int],
 ) -> List[int]:
-    """Filter candidates to those with a finite edge from `current`."""
+    """Filter candidates to those with valid (finite) edges from current city."""
     return [c for c in candidates if np.isfinite(problem.get_distance(current, c))]
 
 
@@ -835,99 +958,348 @@ def _choose_next_city_erx(
     remaining: Set[int],
 ) -> int:
     """
-    ERX rule of thumb:
-      1) Prefer feasible neighbors from the edge table (i.e., edges present in parents).
-      2) Among them, choose the one with the smallest neighbor-list size (avoids dead-ends).
-      3) Break ties randomly.
-      4) If no feasible edge-table neighbors exist, fall back to any remaining city that is feasible.
-      5) If nothing is feasible, pick any remaining city (will likely be invalid; caller can detect).
+    Select next city using Edge Recombination heuristic.
+
+    Strategy (in priority order):
+        1. Prefer cities that were neighbors in parents (edge preservation)
+        2. Among valid neighbors, choose one with smallest degree (avoid dead ends)
+        3. If no parent edges work, choose any feasible city
+        4. Last resort: random remaining city (may be invalid)
     """
-    # 1) Try parent-neighbors first (edge-aware)
+    # Try parent-neighbor edges first
     parent_neighbors = edge_table.get(current, set())
     options = _feasible_neighbors(problem, current, parent_neighbors & remaining)
 
     if options:
-        # 2) Prefer the city whose edge_table list is smallest (classic ERX heuristic)
-        min_deg = min(len(edge_table[c]) for c in options)
-        best = [c for c in options if len(edge_table[c]) == min_deg]
+        # Prefer cities with smaller degree (classic ERX heuristic)
+        min_degree = min(len(edge_table[c]) for c in options)
+        best = [c for c in options if len(edge_table[c]) == min_degree]
         return random.choice(best)
 
-    # 4) Fall back: any remaining city that is feasible from current
+    # Fallback: any remaining city with valid edge
     feasible_any = [
         c for c in remaining if np.isfinite(problem.get_distance(current, c))
     ]
     if feasible_any:
         return random.choice(feasible_any)
 
-    # 5) Last resort: will probably create an invalid edge; sparse-aware wrapper can fall back
+    # Last resort: may create invalid edge
     return random.choice(list(remaining))
 
 
 def edge_recombination_crossover_sparse_aware(
     problem: TravelingSalesmanProblem,
-    p1: Individual,
-    p2: Individual,
-    *,
+    parent1: Individual,
+    parent2: Individual,
     start_city: Optional[int] = None,
-    max_restarts: int = 5,
 ) -> Individual:
     """
-    Edge Recombination Crossover (ERX), adapted for sparse graphs.
+    Edge Recombination Crossover adapted for sparse graphs.
 
-    - Builds child by preserving parent edges when possible.
-    - Tries a few restarts (different start cities) to increase chance of validity.
-    - If all attempts yield an invalid tour, clones the better parent.
+    ERX preserves edges from parents, which increases the chance of
+    producing valid offspring in sparse graphs where many edges are missing.
 
-    Why ERX helps on sparse TSP:
-    - Parent edges are known to exist => child is more likely to stay feasible than OX.
+    Tries multiple start cities to find a valid tour. If all attempts fail,
+    clones the better parent.
     """
     n = problem.num_cities
-    best_child: Optional[Individual] = None
 
-    # Candidate start cities: user-provided + a few random ones
+    # Try multiple start cities
+    max_restarts = 5
     starts: List[int] = []
     if start_city is not None:
         starts.append(int(start_city))
     starts.extend(random.sample(range(n), k=min(n, max_restarts)))
+
     # Deduplicate while preserving order
-    seen_start = set()
-    starts = [s for s in starts if not (s in seen_start or seen_start.add(s))]
+    seen = set()
+    starts = [s for s in starts if not (s in seen or seen.add(s))]
 
-    for s in starts:
-        edge_table = _merge_edge_tables(p1.tour, p2.tour)
-        remaining = set(int(c) for c in range(n))
+    for start in starts:
+        edge_table = _merge_edge_tables(parent1.tour, parent2.tour)
+        remaining = set(range(n))
 
-        current = int(s)
+        current = int(start)
         child_tour: List[int] = [current]
         remaining.remove(current)
         _remove_city_from_all(edge_table, current)
 
+        # Build tour greedily using edge table
         while remaining:
-            nxt = _choose_next_city_erx(problem, edge_table, current, remaining)
-            child_tour.append(nxt)
-            remaining.remove(nxt)
+            next_city = _choose_next_city_erx(problem, edge_table, current, remaining)
+            child_tour.append(next_city)
+            remaining.remove(next_city)
+            _remove_city_from_all(edge_table, next_city)
+            current = next_city
 
-            _remove_city_from_all(edge_table, nxt)
-            current = nxt
-
+        # Check if tour is valid
         child = Individual(
-            tour=np.asarray(child_tour, dtype=int), mutation_rate=p1.mutation_rate
+            tour=np.asarray(child_tour, dtype=int), mutation_rate=parent1.mutation_rate
         )
         child.evaluate(problem)
 
-        # Keep the first valid child; or remember best (finite) child if you want
         if np.isfinite(child.fitness):
             return child
 
-        # Track the best invalid/finite attempt just in case (optional behavior)
-        if best_child is None or child.fitness < best_child.fitness:
-            best_child = child
-
-    # If ERX couldn't produce a valid child, fall back to cloning better parent
-    better = p1 if p1.fitness < p2.fitness else p2
+    # Fallback: clone better parent
+    better = parent1 if parent1.fitness < parent2.fitness else parent2
     clone = Individual(tour=np.copy(better.tour), mutation_rate=better.mutation_rate)
     clone.fitness = better.fitness
     return clone
+
+
+# ==============================================================
+# LOCAL SEARCH (2-opt)
+# ==============================================================
+
+
+def two_opt_local_search(
+    individual: Individual,
+    problem: TravelingSalesmanProblem,
+    max_iters: int = None,
+) -> Individual:
+    """
+    Apply 2-opt local search to improve a tour.
+
+    2-opt removes two edges and reconnects the tour in the only other way possible,
+    accepting the change if it improves fitness.
+
+    Continues until no improving move is found or max iterations reached.
+    """
+    if max_iters is None:
+        max_iters = GA.LOCAL_SEARCH_MAX_ITERS
+
+    tour = individual.tour
+    distance_matrix = problem.distance_matrix
+    feasible = problem.feasible
+
+    if individual.fitness is None:
+        individual.evaluate(problem)
+
+    iteration = 0
+
+    while iteration < max_iters:
+        iteration += 1
+
+        # Find first improving 2-opt move
+        i, j = find_first_2opt_improvement(tour, distance_matrix, feasible)
+
+        if i == -1:
+            break  # Local optimum reached
+
+        # Apply 2-opt swap (reverse segment between i and j)
+        tour[i : j + 1] = tour[i : j + 1][::-1]
+
+    # Re-evaluate after modifications
+    individual.evaluate(problem)
+    return individual
+
+
+@numba.njit(cache=True)
+def find_first_2opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+) -> Tuple[int, int]:
+    """
+    Scan for first improving 2-opt move using Numba acceleration.
+
+    Returns:
+        (i, j) indices for improvement, or (-1, -1) if none found
+    """
+    n = tour.shape[0]
+
+    for i in range(1, n - 1):
+        a = tour[i - 1]
+        b = tour[i]
+
+        for j in range(i + 1, n):
+            next_j = (j + 1) % n
+            c = tour[j]
+            d = tour[next_j]
+
+            # Check if new edges would be valid
+            if not feasible[a, c] or not feasible[b, d]:
+                continue
+
+            cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
+            cost_added = distance_matrix[a, c] + distance_matrix[b, d]
+
+            # Repair case: current tour has invalid edge
+            if np.isinf(cost_removed):
+                return i, j
+
+            # Improvement case
+            if cost_added < cost_removed - 1e-9:
+                return i, j
+
+    return -1, -1
+
+
+# ==============================================================
+# LARGE NEIGHBORHOOD SEARCH (LNS)
+# ==============================================================
+
+
+def lns_destroy_repair(
+    problem: TravelingSalesmanProblem,
+    tour: np.ndarray,
+    destroy_fraction: float = None,
+) -> Optional[np.ndarray]:
+    """
+    Large Neighborhood Search: destroy part of tour and rebuild greedily.
+
+    Strategy:
+        1. Remove a fraction of cities from the tour
+        2. Greedily reinsert them at positions that minimize cost
+
+    This can escape local optima by making larger moves than standard mutation.
+
+    Args:
+        problem: TSP instance
+        tour: Current tour
+        destroy_fraction: Fraction of cities to remove and reinsert
+
+    Returns:
+        Reconstructed tour, or None if reconstruction fails
+    """
+    if destroy_fraction is None:
+        destroy_fraction = GA.LNS_DESTROY_FRACTION
+
+    n = len(tour)
+    num_to_remove = int(n * destroy_fraction)
+
+    # Remove random cities
+    removed_indices = random.sample(range(n), num_to_remove)
+    removed_cities = [tour[i] for i in removed_indices]
+    random.shuffle(removed_cities)
+
+    remaining = [c for c in tour if c not in removed_cities]
+
+    # Greedily reinsert each removed city
+    for city in removed_cities:
+        best_position = None
+        best_cost = float("inf")
+
+        # Try inserting at each position
+        for i in range(len(remaining)):
+            prev_city = remaining[i - 1]
+            next_city = remaining[i]
+
+            # Check if insertion would be valid
+            if not np.isfinite(problem.get_distance(prev_city, city)):
+                continue
+            if not np.isfinite(problem.get_distance(city, next_city)):
+                continue
+
+            # Calculate insertion cost (with small randomization to break ties)
+            cost = (
+                problem.get_distance(prev_city, city)
+                + problem.get_distance(city, next_city)
+                - problem.get_distance(prev_city, next_city)
+            )
+
+            # Small random perturbation helps escape local optima
+            cost *= 1.0 + random.uniform(-0.02, 0.02)
+
+            if cost < best_cost:
+                best_cost = cost
+                best_position = i
+
+        if best_position is None:
+            return None  # Couldn't reinsert city
+
+        remaining.insert(best_position, city)
+
+    return np.array(remaining, dtype=int)
+
+
+# ==============================================================
+# HYBRID LOCAL SEARCH APPLICATION
+# ==============================================================
+
+
+def _compute_near_best_threshold(
+    pop_best: Optional[float],
+    overall_best: Optional[float],
+) -> Optional[float]:
+    """
+    Compute fitness threshold for "near best" classification.
+
+    Returns:
+        Fitness value representing "close to best" (within configured fraction)
+    """
+    thresholds: List[float] = []
+
+    if pop_best is not None and np.isfinite(pop_best):
+        thresholds.append(pop_best * (1.0 + GA.LSO_NEAR_BEST_FRAC))
+
+    if overall_best is not None and np.isfinite(overall_best):
+        thresholds.append(overall_best * (1.0 + GA.LSO_NEAR_BEST_FRAC))
+
+    return min(thresholds) if thresholds else None
+
+
+def apply_local_search_hybrid(
+    offspring: List[Individual],
+    problem: TravelingSalesmanProblem,
+    pop_best_fitness: Optional[float] = None,
+    best_overall_fitness: Optional[float] = None,
+) -> None:
+    """
+    Apply 2-opt local search selectively to promising offspring.
+
+    Strategy:
+        - Always apply to top K offspring (most promising)
+        - Apply to offspring near best fitness (within configured threshold)
+        - Apply to offspring that beat at least one parent
+
+    This balances solution quality with computational efficiency.
+    """
+    if not offspring:
+        return
+
+    # Ensure all fitness values are computed and sort
+    offspring.sort(key=lambda ind: ind.fitness)
+
+    # Always improve top K
+    top_k = GA.LSO_ALWAYS_IMPROVE_TOP_K
+    selected_ids = {id(ind) for ind in offspring[:top_k]}
+
+    # Compute "near best" threshold
+    near_best_threshold = _compute_near_best_threshold(
+        pop_best=pop_best_fitness,
+        overall_best=best_overall_fitness,
+    )
+
+    # Select additional offspring based on criteria
+    for ind in offspring[top_k:]:
+        if id(ind) in selected_ids:
+            continue
+
+        # Check if near best
+        near_best = (
+            near_best_threshold is not None and ind.fitness <= near_best_threshold
+        )
+
+        # Check if beats parent (if configured)
+        beats_parent = False
+        if GA.LSO_APPLY_IF_BEATS_ANY_PARENT:
+            p1_fit = getattr(ind, "_p1_fitness", None)
+            p2_fit = getattr(ind, "_p2_fitness", None)
+            if p1_fit is not None and p2_fit is not None:
+                beats_parent = (ind.fitness + 1e-9) < max(p1_fit, p2_fit)
+
+        if near_best or beats_parent:
+            selected_ids.add(id(ind))
+
+    if GA.LSO_LOG_COUNTS:
+        logger.info(f"  Applying 2-opt to {len(selected_ids)} offspring")
+
+    # Apply 2-opt to selected individuals
+    for ind in offspring:
+        if id(ind) in selected_ids:
+            two_opt_local_search(ind, problem)
 
 
 # ==============================================================
@@ -943,9 +1315,11 @@ def elimination_with_crowding(
     """
     Deterministic crowding survivor selection.
 
-    Each offspring competes against the most similar individual
-    in the current population (similarity ≈ fitness distance).
+    Each offspring competes with its most similar individual in the
+    current population (similarity measured by fitness distance).
     The better one survives.
+
+    This promotes diversity while maintaining quality.
     """
     if not offspring:
         return population[:population_size]
@@ -957,7 +1331,10 @@ def elimination_with_crowding(
             survivors.append(child)
             continue
 
+        # Find most similar individual
         rival = find_most_similar(child, survivors)
+
+        # Child replaces rival if better
         if rival is not None and child.fitness < rival.fitness:
             survivors.remove(rival)
             survivors.append(child)
@@ -975,18 +1352,20 @@ def elimination_diversity_preserved(
     Survivor selection with explicit diversity preservation.
 
     Strategy:
-      1) Keep a fraction of elite (best-fitness) individuals.
-      2) Fill remaining slots with individuals that are far away
-         in fitness from the current survivors.
+        1. Keep elite individuals (best fitness)
+        2. Fill remaining slots with individuals maximizing fitness distance
+
+    This ensures both quality and diversity in the population.
     """
     combined = population + offspring
 
     if len(combined) <= population_size:
         return combined
 
-    # Sort by fitness (lower is better)
+    # Sort by fitness
     combined.sort(key=lambda ind: ind.fitness)
 
+    # Reserve slots for elite
     elite_count = int(population_size * (1 - GA.DIVERSITY_PRESERVATION))
     survivors = combined[:elite_count]
     candidates = combined[elite_count:]
@@ -1010,7 +1389,7 @@ def elimination_diversity_preserved(
         survivors.append(best_candidate)
         candidates.remove(best_candidate)
 
-    # Fallback: fill remaining slots (if any)
+    # Fill any remaining slots
     while len(survivors) < population_size and candidates:
         survivors.append(candidates.pop(0))
 
@@ -1018,299 +1397,28 @@ def elimination_diversity_preserved(
 
 
 # ==============================================================
-# ADAPTIVE MUTATION RATE
-# ==============================================================
-
-
-def adaptive_mutation_rate(
-    individual: Individual,
-    population_diversity: float,
-) -> None:
-    """
-    Adapt an individual's mutation rate based on population diversity.
-
-    Lower diversity  → higher mutation rate (more exploration)
-    Higher diversity → lower mutation rate (more exploitation)
-
-    The mutation rate is always clamped to a safe predefined range.
-    """
-    min_rate = GA.MUTATION_ALPHA_MIN
-    max_rate = GA.MUTATION_ALPHA_MAX
-
-    # Baseline mutation rate (midpoint of allowed range)
-    base_rate = (min_rate + max_rate) / 2.0
-
-    # Diversity adjustment: low diversity increases mutation
-    adjustment = (1.0 - population_diversity) * 0.5
-
-    new_rate = base_rate + adjustment
-
-    individual.mutation_rate = float(np.clip(new_rate, min_rate, max_rate))
-
-
-# ==============================================================
-# LOCAL SEARCH (2-opt)
-# ==============================================================
-
-MoveKey = Tuple[int, int, int, int]  # canonicalized for symmetric/undirected caching
-
-
-@dataclass
-class TwoOptMoveCache:
-    """
-    Cache of 2-opt moves that are known to be:
-      - infeasible (would create inf edges), or
-      - non-improving (delta >= 0)
-
-    This is safe because delta/feasibility depend only on distances, not on tour context.
-    """
-
-    seen_bad: Set[MoveKey] = field(default_factory=set)
-    max_size: int = 1_000_000  # cap to avoid unbounded memory growth
-
-    def has(self, key: MoveKey) -> bool:
-        return key in self.seen_bad
-
-    def add(self, key: MoveKey) -> None:
-        if len(self.seen_bad) >= self.max_size:
-            # simple eviction: clear (or swap for random eviction/LRU if you prefer)
-            self.seen_bad.clear()
-        self.seen_bad.add(key)
-
-
-def two_opt_local_search(
-    individual: Individual,
-    problem: TravelingSalesmanProblem,
-    max_iters: int = 5,
-    cache: Optional[TwoOptMoveCache] = None,
-) -> Individual:
-    tour = individual.tour
-    dm = problem.distance_matrix
-    feasible = problem.feasible
-
-    if individual.fitness is None:
-        individual.evaluate(problem)
-
-    iteration = 0
-
-    while iteration < max_iters:
-        iteration += 1
-
-        i, j = find_first_2opt_improvement(tour, dm, feasible)
-
-        if i == -1:
-            break  # local optimum reached
-
-        # Apply swap
-        tour[i : j + 1] = tour[i : j + 1][::-1]
-
-    individual.evaluate(problem)
-    return individual
-
-
-@numba.njit(cache=True)
-def find_first_2opt_improvement(
-    tour: np.ndarray,
-    dm: np.ndarray,
-    feasible: np.ndarray,
-) -> tuple[int, int]:
-    """
-    Scan tour and return (i, j) of the first improving 2-opt move.
-    Returns (-1, -1) if none found.
-    """
-    n = tour.shape[0]
-
-    for i in range(1, n - 1):
-        a = tour[i - 1]
-        b = tour[i]
-
-        for j in range(i + 1, n):
-            nj = (j + 1) % n
-            c = tour[j]
-            d = tour[nj]
-
-            # Safety check: new edges must be finite
-            if not feasible[a, c] or not feasible[b, d]:
-                continue
-
-            cost_removed = dm[a, b] + dm[c, d]
-            cost_added = dm[a, c] + dm[b, d]
-
-            # Repair case
-            if np.isinf(cost_removed):
-                return i, j
-
-            # Strict improvement
-            if cost_added < cost_removed - 1e-9:
-                return i, j
-
-    return -1, -1
-
-
-# ===================
-# LNS
-# ===================
-
-def lns_destroy_repair(
-    problem: TravelingSalesmanProblem,
-    tour: np.ndarray,
-    destroy_frac: float = 0.08,
-) -> Optional[np.ndarray]:
-    n = len(tour)
-    k = int(n * destroy_frac)
-
-    # 1) Remove k consecutive cities
-    # start = random.randint(0, n - k)
-    removed_idx = random.sample(range(n), k)
-    removed = list(tour[i] for i in removed_idx)
-    random.shuffle(removed)
-
-    remaining = [c for c in tour if c not in removed]
-
-    # 2) Reinsert greedily
-    for city in removed:
-        best_pos = None
-        best_cost = float("inf")
-
-        for i in range(len(remaining)):
-            a = remaining[i - 1]
-            b = remaining[i]
-            if not np.isfinite(problem.get_distance(a, city)):
-                continue
-            if not np.isfinite(problem.get_distance(city, b)):
-                continue
-
-            cost = (
-                problem.get_distance(a, city)
-                + problem.get_distance(city, b)
-                - problem.get_distance(a, b)
-            )
-
-            if cost < best_cost * (1.0 + random.uniform(-0.02, 0.02)):
-                best_cost = cost
-                best_pos = i
-
-        if best_pos is None:
-            return None
-
-        remaining.insert(best_pos, city)
-
-    return np.array(remaining, dtype=int)
-
-def destruction_fraction(stall_gens: int) -> float:
-    return 0.4  # nuclear
-
-
-
-# ==============================================================
-# HYBRID LOCAL SEARCH APPLICATION
-# ==============================================================
-
-
-def _compute_near_best_threshold(
-    pop_best: Optional[float],
-    overall_best: Optional[float],
-) -> Optional[float]:
-    """
-    Compute a fitness threshold for "near best" selection.
-    Smaller is better (tour length).
-    """
-    thresholds: List[float] = []
-
-    if pop_best is not None and np.isfinite(pop_best):
-        thresholds.append(pop_best * (1.0 + GA.LSO_NEAR_BEST_FRAC))
-
-    if overall_best is not None and np.isfinite(overall_best):
-        thresholds.append(overall_best * (1.0 + GA.LSO_NEAR_BEST_FRAC))
-
-    return min(thresholds) if thresholds else None
-
-
-def _offspring_beats_parent(ind: Individual) -> bool:
-    """Return True if ind beats at least one parent fitness stored on the object."""
-    if not GA.LSO_APPLY_IF_BEATS_ANY_PARENT:
-        return False
-
-    p1 = getattr(ind, "_p1_fitness", None)
-    p2 = getattr(ind, "_p2_fitness", None)
-    if p1 is None or p2 is None:
-        return False
-
-    # beats the worse parent (so it beats at least one)
-    return (ind.fitness + 1e-9) < max(p1, p2)
-
-
-def apply_local_search_hybrid(
-    offspring: List[Individual],
-    problem: TravelingSalesmanProblem,
-    pop_best_fitness: Optional[float] = None,
-    best_overall_fitness: Optional[float] = None,
-    two_opt_cache: Optional[TwoOptMoveCache] = None,
-) -> None:
-    """
-    Apply local search strategically to offspring:
-
-    1. Apply 3-opt to top K offspring (most promising, worth expensive search)
-    2. Apply 2-opt to remaining promising offspring (faster, wider coverage)
-
-    This hybrid approach balances solution quality with computational cost.
-    """
-    if not offspring:
-        return
-
-    # Ensure fitness is available for sorting
-    offspring.sort(key=lambda ind: ind.fitness)
-
-    # Phase 2: Apply 2-opt to other promising offspring
-    # (Skip the ones that already got 3-opt to avoid redundant work)
-    top_k_2opt = int(GA.LSO_ALWAYS_IMPROVE_TOP_K)
-    selected_for_2opt_ids = {id(ind) for ind in offspring[:top_k_2opt]}
-
-    near_best_threshold = _compute_near_best_threshold(
-        pop_best=pop_best_fitness,
-        overall_best=best_overall_fitness,
-    )
-
-    # Also select offspring that beat parents or are near best
-    for ind in offspring[top_k_2opt:]:
-        if id(ind) in selected_for_2opt_ids:
-            continue
-
-        near_best = (
-            near_best_threshold is not None and ind.fitness <= near_best_threshold
-        )
-
-        if _offspring_beats_parent(ind) or near_best:
-            selected_for_2opt_ids.add(id(ind))
-
-    if GA.LSO_LOG_COUNTS:
-        logger.info(
-            f"  LSO: 3-opt on {GA.THREE_OPT_TOP_K} offspring, "
-            f"2-opt on {len(selected_for_2opt_ids)} offspring"
-        )
-
-    # Apply 2-opt to selected individuals
-    for ind in offspring:
-        if id(ind) in selected_for_2opt_ids:
-            two_opt_local_search(
-                ind, problem, max_iters=GA.LOCAL_SEARCH_MAX_ITERS, cache=two_opt_cache
-            )
-
-
-# ==============================================================
 # SPARSITY DETECTION
 # ==============================================================
 
 
-def is_sparse_matrix(distance_matrix: np.ndarray, threshold: float = 0.1) -> bool:
-    """Sparse = many off-diagonal inf edges (missing connections)."""
+def is_sparse_matrix(distance_matrix: np.ndarray) -> bool:
+    """
+    Detect if distance matrix represents a sparse graph.
+
+    Sparse = many off-diagonal infinite edges (missing connections).
+
+    Returns:
+        True if sparsity exceeds configured threshold
+    """
     n = distance_matrix.shape[0]
-    off = ~np.eye(n, dtype=bool)
-    inf_count = int(np.isinf(distance_matrix[off]).sum())
+    off_diagonal = ~np.eye(n, dtype=bool)
+    inf_count = int(np.isinf(distance_matrix[off_diagonal]).sum())
     total = n * (n - 1)
     sparsity = inf_count / total if total else 0.0
+
     logger.info(f"  Matrix sparsity: {sparsity:.1%} of edges are infinite")
-    return sparsity > threshold
+
+    return sparsity > GA.SPARSITY_THRESHOLD
 
 
 # ==============================================================
@@ -1319,41 +1427,62 @@ def is_sparse_matrix(distance_matrix: np.ndarray, threshold: float = 0.1) -> boo
 
 
 class r0123456:
-    """Genetic Algorithm for TSP with sparse-graph fallbacks + hybrid 2-opt/3-opt local search."""
+    """
+    Genetic Algorithm solver for TSP with adaptive strategies.
+
+    Features:
+        - Sparse-aware crossover and mutation
+        - Hybrid local search (2-opt)
+        - Large Neighborhood Search for escaping local optima
+        - Self-adaptive mutation rates
+        - Diversity preservation
+    """
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
         self.is_sparse = False
 
     def optimize(self, filename: str) -> int:
+        """
+        Main optimization routine.
+
+        Args:
+            filename: Path to CSV file containing distance matrix
+
+        Returns:
+            0 on successful completion
+        """
+        # Load problem instance
         problem = TravelingSalesmanProblem(
             self._read_distance_matrix(filename), os.path.basename(filename)
         )
         problem.print_info()
 
-        problem.feasible = np.isfinite(problem.distance_matrix)
-
+        # Initialize population
         print_section("INITIALIZATION")
         population = initialize_population_greedy_sparse_aware(
             problem, GA.POPULATION_SIZE
         )
         self._log_population_stats(population, "Initial Population")
 
+        # Track best solution
         best_overall = min(population, key=lambda x: x.fitness)
         best_overall_fitness = best_overall.fitness
-        last_improve_gen, stall_gens = 0, 0
+        last_improve_gen = 0
+        stall_gens = 0
 
+        # Evolution loop
         print_section("EVOLUTION")
-        start = time.perf_counter()
-        checkpoint = start
+        start_time = time.perf_counter()
+        checkpoint = start_time
 
-        two_opt_cache = TwoOptMoveCache()
-
-        for gen in range(1, GA.GENERATIONS + 1):
+        for generation in range(1, GA.GENERATIONS + 1):
+            # Generate offspring
             offspring = self._evolve_one_generation(
-                population, problem, gen, two_opt_cache, best_overall_fitness
+                population, problem, generation, best_overall_fitness
             )
 
+            # Survivor selection
             population = (
                 elimination_with_crowding(population, offspring, GA.POPULATION_SIZE)
                 if GA.USE_CROWDING
@@ -1362,81 +1491,68 @@ class r0123456:
                 )
             )
 
+            # Track best solution
             gen_best = min(population, key=lambda x: x.fitness)
+            gen_mean = float(np.mean([ind.fitness for ind in population]))
 
-            # Track best-so-far + stall for progress visibility
+            # Check for improvement
             if gen_best.fitness < best_overall_fitness - 1e-9:
-                best_overall, best_overall_fitness = gen_best, gen_best.fitness
-                last_improve_gen, stall_gens = gen, 0
+                best_overall = gen_best
+                best_overall_fitness = gen_best.fitness
+                last_improve_gen = generation
+                stall_gens = 0
             else:
                 stall_gens += 1
 
-            gen_mean = float(np.mean([ind.fitness for ind in population]))
-
-            # Periodic compact log line (consistent columns)
-            if gen % 10 == 0:
-                dt = time.perf_counter() - checkpoint
+            # Periodic logging
+            if generation % GA.LOG_INTERVAL == 0:
+                elapsed = time.perf_counter() - checkpoint
                 checkpoint = time.perf_counter()
-                div = edge_diversity(population)
+                diversity = edge_diversity(population)
+
                 logger.info(
-                    "  Gen {g:4d} │ Mean: {m:12.2f} │ Best: {b:12.2f} │ Div: {d:8.2%} │ "
-                    "Δt: {t:7.2f}s │ NoImp: {s:4d} (last@{l:4d})".format(
-                        g=gen,
-                        m=gen_mean,
-                        b=gen_best.fitness,
-                        d=div,
-                        t=dt,
-                        s=stall_gens,
-                        l=last_improve_gen,
-                    )
+                    f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
+                    f"Best: {gen_best.fitness:12.2f} │ Div: {diversity:8.2%} │ "
+                    f"Δt: {elapsed:7.2f}s │ NoImp: {stall_gens:4d} (last@{last_improve_gen:4d})"
                 )
 
-            if stall_gens > 80 and gen % 20 == 0:
-                logger.info("DO SOMETHING")
-                logger.info("LNS")
-                frac = destruction_fraction(stall_gens)
-                cand = lns_destroy_repair(problem, best_overall.tour, destroy_frac=frac)
-                best_lns = None
-                best_fit = best_overall_fitness
-                for _ in range(20):  #← only TWO, keep it simple
-                    cand = lns_destroy_repair(problem, best_overall.tour, destroy_frac=frac)
-                    if cand is None:
-                        continue
-                ind = Individual(tour=cand)
-                ind.evaluate(problem)
-                two_opt_local_search(ind, problem, max_iters=30)
-                if ind.fitness < best_fit:
-                    best_lns = ind
-                    best_fit = ind.fitness
-                    if best_lns is not None:
-                        delta = best_lns.fitness - best_overall_fitness # Accept improvement OR small uphill move when stalled
-                        if delta < 0 or (stall_gens > 200 and delta < 30):
-                            population[0] = best_lns
-                            best_overall = best_lns
-                            best_overall_fitness = best_lns.fitness
-                            stall_gens = 0
+            # Apply LNS when stalled
+            if (
+                stall_gens > GA.LNS_STALL_THRESHOLD
+                and generation % GA.LNS_CHECK_INTERVAL == 0
+            ):
+                improved = self._apply_large_neighborhood_search(
+                    problem, best_overall, best_overall_fitness, stall_gens, population
+                )
 
-            # Reporter handles time limit; negative means "stop"
+                if improved is not None:
+                    best_overall = improved
+                    best_overall_fitness = improved.fitness
+                    stall_gens = 0
+
+            # Check time limit
             if self.reporter.report(gen_mean, gen_best.fitness, gen_best.tour) < 0:
                 logger.info("\n  ⏱  Time limit reached")
                 break
 
-        total = time.perf_counter() - start
+        # Final statistics
+        total_time = time.perf_counter() - start_time
         print_section("RESULTS")
         print_stats_table(
             {
                 "Best Fitness": best_overall.fitness,
-                "Generations": gen,
-                "Total Time (s)": total,
-                "Avg Time/Gen (s)": total / gen,
-                "Final Diversity": population_diversity(population),
+                "Generations": generation,
+                "Total Time (s)": total_time,
+                "Avg Time/Gen (s)": total_time / generation,
+                "Final Diversity": edge_diversity(population),
             }
         )
         logger.info("")
+
         return 0
 
     def _read_distance_matrix(self, filename: str) -> np.ndarray:
-        """CSV → numpy distance matrix."""
+        """Load distance matrix from CSV file."""
         with open(filename, "r") as f:
             return np.loadtxt(f, delimiter=",")
 
@@ -1445,109 +1561,234 @@ class r0123456:
         population: List[Individual],
         problem: TravelingSalesmanProblem,
         generation: int,
-        two_opt_cache: TwoOptMoveCache,
         best_overall_fitness: float,
     ) -> List[Individual]:
-        """Create offspring (strategy switches for sparse vs dense graphs)."""
+        """
+        Generate offspring for one generation.
+
+        Strategy adapts based on graph sparsity:
+            - Dense graphs: standard OX crossover with adaptive mutation
+            - Sparse graphs: ERX crossover with sparse-aware mutation
+        """
+        # Detect sparsity on first generation
         if generation == 1:
             self.is_sparse = is_sparse_matrix(problem.distance_matrix)
-            if self.is_sparse:
-                logger.info("  🔍 Sparse matrix detected - using adapted strategy")
-                logger.info(
-                    "  Strategy: Crowding + sparse-safe mutation + hybrid local search (2-opt + 3-opt)"
-                )
-            else:
-                logger.info(
-                    "  Strategy: Hybrid local search (2-opt + 3-opt on top offspring)"
-                )
+            self._log_strategy()
 
         offspring: List[Individual] = []
         pop_best = min(population, key=lambda x: x.fitness).fitness
 
-        diversity = (
-            population_diversity(population)
-            if generation % GA.DIVERSITY_CHECK_INTERVAL == 0
-            else None
-        )
+        # Check diversity periodically
+        diversity = None
+        if generation % GA.DIVERSITY_CHECK_INTERVAL == 0:
+            diversity = edge_diversity(population)
 
-        # In sparse graphs: fewer valid children per attempt → reduce target, raise attempts a bit
+        # Configure offspring generation based on sparsity
         if self.is_sparse:
             target = GA.OFFSPRING_SIZE
-            max_attempts = target * 3   # NOT 10
+            max_attempts = target * GA.SPARSE_OFFSPRING_TARGET_MULTIPLIER
         else:
             target = GA.OFFSPRING_SIZE
-            max_attempts = target * 50
+            max_attempts = target * GA.PERTURBATION_MAX_ATTEMPTS_MULTIPLIER
 
+        # Generate offspring
         attempts = 0
         while len(offspring) < target and attempts < max_attempts:
             attempts += 1
-            p1 = tournament_selection(population, GA.TOURNAMENT_K)
-            p2 = tournament_selection(population, GA.TOURNAMENT_K)
 
+            # Select parents
+            parent1 = tournament_selection(population, GA.TOURNAMENT_K)
+            parent2 = tournament_selection(population, GA.TOURNAMENT_K)
+
+            # Create child based on graph type
             if self.is_sparse:
-                if random.random() < 0.15:
-                    child = edge_recombination_crossover_sparse_aware(
-                        problem, p1, p2
-                    )  # evaluated inside
-                else:
-                    better = p1 if p1.fitness < p2.fitness else p2
-                    child = Individual(
-                        tour=np.copy(better.tour), mutation_rate=better.mutation_rate
-                    )
-                    child.fitness = better.fitness
-
-                # Store parent fitness for "beats-parent" 2-opt trigger
-                child._p1_fitness, child._p2_fitness = p1.fitness, p2.fitness
-                mutation_sparse_aware(child, problem)  # re-evaluates as needed
-
+                child = self._create_offspring_sparse(problem, parent1, parent2)
             else:
-                child = (
-                    order_crossover(problem, p1, p2)
-                    if random.random() < GA.CROSSOVER_PROB
-                    else Individual(
-                        tour=np.copy(p1.tour), mutation_rate=p1.mutation_rate
-                    )
+                child = self._create_offspring_dense(
+                    problem, parent1, parent2, diversity
                 )
-                if diversity is not None:
-                    adaptive_mutation_rate(child, diversity)
 
-                mutation(child)
-                child.evaluate(problem)
-                child._p1_fitness, child._p2_fitness = p1.fitness, p2.fitness
+            # Store parent fitness for local search decisions
+            child._p1_fitness = parent1.fitness
+            child._p2_fitness = parent2.fitness
 
+            # Only keep valid offspring
             if np.isfinite(child.fitness):
                 offspring.append(child)
 
-        # If offspring generation struggled, clone to keep selection/elimination stable
-        min_offspring = max(3, len(population))
-        cloned = 0
-        while len(offspring) < min_offspring and population:
-            p = random.choice(population)
-            clone = Individual(tour=np.copy(p.tour), mutation_rate=p.mutation_rate)
-            clone.fitness = p.fitness
-            clone._p1_fitness = clone._p2_fitness = p.fitness
-            offspring.append(clone)
-            cloned += 1
+        # Clone if needed to maintain population stability
+        cloned = self._ensure_minimum_offspring(offspring, population)
 
-        if generation % 20 == 0 and (len(offspring) < target or cloned):
+        # Log offspring generation statistics
+        if generation % GA.LOG_SPARSE_OFFSPRING_STATS_INTERVAL == 0 and (
+            len(offspring) < target or cloned
+        ):
             logger.info(
-                f"  Gen {generation}: Generated {len(offspring) - cloned}/{target} offspring, cloned {cloned}"
+                f"  Gen {generation}: Generated {len(offspring) - cloned}/{target} "
+                f"offspring, cloned {cloned}"
             )
 
-        # Apply hybrid local search: 3-opt to best, 2-opt to rest
+        # Apply local search to promising offspring
         if offspring and GA.LOCAL_SEARCH_ENABLED:
             apply_local_search_hybrid(
                 offspring,
                 problem,
                 pop_best_fitness=pop_best,
                 best_overall_fitness=best_overall_fitness,
-                two_opt_cache=two_opt_cache,
             )
 
         return offspring
 
+    def _create_offspring_sparse(
+        self,
+        problem: TravelingSalesmanProblem,
+        parent1: Individual,
+        parent2: Individual,
+    ) -> Individual:
+        """
+        Create offspring for sparse graphs using edge-preserving operators.
+        """
+        # Use ERX occasionally, otherwise clone better parent
+        if random.random() < GA.ERX_PROB_SPARSE:
+            child = edge_recombination_crossover_sparse_aware(problem, parent1, parent2)
+        else:
+            better = parent1 if parent1.fitness < parent2.fitness else parent2
+            child = Individual(
+                tour=np.copy(better.tour), mutation_rate=better.mutation_rate
+            )
+            child.fitness = better.fitness
+
+        # Apply sparse-aware mutation
+        mutation_sparse_aware(child, problem)
+
+        return child
+
+    def _create_offspring_dense(
+        self,
+        problem: TravelingSalesmanProblem,
+        parent1: Individual,
+        parent2: Individual,
+        diversity: Optional[float],
+    ) -> Individual:
+        """
+        Create offspring for dense graphs using standard operators.
+        """
+        # Apply crossover or clone
+        if random.random() < GA.CROSSOVER_PROB:
+            child = order_crossover(problem, parent1, parent2)
+        else:
+            child = Individual(
+                tour=np.copy(parent1.tour), mutation_rate=parent1.mutation_rate
+            )
+
+        # Adapt mutation rate if diversity was measured
+        if diversity is not None:
+            adaptive_mutation_rate(child, diversity)
+
+        # Apply standard mutation
+        mutation(child)
+        child.evaluate(problem)
+
+        return child
+
+    def _ensure_minimum_offspring(
+        self,
+        offspring: List[Individual],
+        population: List[Individual],
+    ) -> int:
+        """
+        Ensure minimum offspring count by cloning if necessary.
+
+        Returns:
+            Number of clones added
+        """
+        min_offspring = max(GA.SPARSE_MIN_OFFSPRING_FACTOR, len(population))
+        cloned = 0
+
+        while len(offspring) < min_offspring and population:
+            parent = random.choice(population)
+            clone = Individual(
+                tour=np.copy(parent.tour), mutation_rate=parent.mutation_rate
+            )
+            clone.fitness = parent.fitness
+            clone._p1_fitness = clone._p2_fitness = parent.fitness
+            offspring.append(clone)
+            cloned += 1
+
+        return cloned
+
+    def _apply_large_neighborhood_search(
+        self,
+        problem: TravelingSalesmanProblem,
+        best_individual: Individual,
+        best_fitness: float,
+        stall_gens: int,
+        population: List[Individual],
+    ) -> Optional[Individual]:
+        """
+        Apply Large Neighborhood Search to escape local optima.
+
+        Destroys and rebuilds portions of the best tour, then applies
+        local search to the reconstruction.
+
+        Returns:
+            Improved individual if found, None otherwise
+        """
+        logger.info(f"  Applying LNS (stalled for {stall_gens} generations)")
+
+        best_lns = None
+        best_lns_fitness = best_fitness
+
+        # Try multiple LNS restarts
+        for _ in range(GA.LNS_NUM_RESTARTS):
+            candidate_tour = lns_destroy_repair(
+                problem, best_individual.tour, destroy_fraction=GA.LNS_DESTROY_FRACTION
+            )
+
+            if candidate_tour is None:
+                continue
+
+            candidate = Individual(tour=candidate_tour)
+            candidate.evaluate(problem)
+
+            # Apply intensive local search to LNS result
+            two_opt_local_search(candidate, problem, max_iters=GA.LNS_2OPT_ITERS)
+
+            if candidate.fitness < best_lns_fitness:
+                best_lns = candidate
+                best_lns_fitness = candidate.fitness
+
+        # Accept improvement or small uphill move when deeply stalled
+        if best_lns is not None:
+            delta = best_lns.fitness - best_fitness
+            accept_uphill = (
+                stall_gens > GA.LNS_ACCEPTANCE_STALL_THRESHOLD
+                and delta < GA.LNS_ACCEPTANCE_UPHILL_DELTA
+            )
+
+            if delta < 0 or accept_uphill:
+                population[0] = best_lns  # Replace worst in population
+                logger.info(
+                    f"    LNS {'improved' if delta < 0 else 'accepted'}: "
+                    f"Δ = {delta:.2f}"
+                )
+                return best_lns
+
+        return None
+
+    def _log_strategy(self) -> None:
+        """Log the selected strategy based on graph sparsity."""
+        if self.is_sparse:
+            logger.info("  🔍 Sparse matrix detected - using adapted strategy")
+            logger.info(
+                "  Strategy: Crowding + sparse-aware mutation + "
+                "ERX crossover + hybrid local search"
+            )
+        else:
+            logger.info("  Strategy: Standard GA + hybrid local search + LNS")
+
     def _log_population_stats(self, population: List[Individual], label: str) -> None:
-        """Quick snapshot: mean/best/worst fitness."""
+        """Log population fitness statistics."""
         fits = [ind.fitness for ind in population]
         print_stats_table(
             {
@@ -1558,84 +1799,31 @@ class r0123456:
         )
 
 
+# ==============================================================
+# MAIN ENTRY POINT
+# ==============================================================
+
+
+def evaluate_tour_from_csv_string(
+    distance_csv_path: str,
+    tour_csv_string: str,
+) -> float:
+    """
+    Evaluate tour length where tour is provided as a CSV string.
+
+    Example tour_csv_string: "0,5,2,7,1,3,4,6"
+    """
+    distance_matrix = np.loadtxt(distance_csv_path, delimiter=",")
+    tour = np.fromstring(tour_csv_string, sep=",", dtype=int)
+
+    problem = TravelingSalesmanProblem(distance_matrix)
+    return evaluate_tour_numba(tour, problem.distance_matrix)
+
+
 if __name__ == "__main__":
-    print("TSP Genetic Algorithm Solver")
 
-    filename = "src/benchmark/tour1000.csv"  # <-- your path
+    dist_csv = "src/benchmark/tour500.csv"
+    tour_csv = "316,20,487,399,372,402,210,279,306,9,336,335,247,131,468,135,139,7,320,17,394,344,486,283,225,119,128,51,278,303,266,201,137,244,386,259,22,460,380,246,400,73,497,349,445,475,452,430,321,41,133,147,309,81,5,88,134,439,491,78,214,185,343,361,441,302,351,67,238,477,115,166,495,261,264,49,424,197,140,490,110,390,90,457,217,64,221,341,63,112,255,443,101,484,200,56,305,129,59,308,209,418,138,295,241,461,326,397,314,472,310,32,432,426,481,436,132,62,102,412,43,178,409,371,123,223,329,275,160,145,421,458,94,76,307,389,172,106,113,240,356,388,413,33,111,262,339,222,342,179,203,498,291,120,427,453,331,98,284,163,249,61,45,6,442,18,406,230,144,40,464,77,30,489,10,274,28,337,24,84,153,80,103,151,270,340,224,488,467,374,474,107,227,419,281,448,260,218,146,292,470,156,36,280,250,175,37,184,334,256,31,379,393,46,248,239,480,116,190,71,401,75,219,433,454,168,0,318,177,296,431,162,192,323,86,126,363,333,304,72,263,423,482,142,276,365,299,158,191,55,38,364,216,311,471,141,70,369,301,21,93,395,50,143,330,362,39,332,195,232,408,96,228,405,174,183,285,206,435,2,297,205,182,14,357,16,169,462,97,287,425,315,352,494,288,434,52,366,171,170,293,187,121,189,359,83,449,473,148,233,450,438,451,243,345,150,53,499,173,466,282,277,15,429,353,370,294,65,347,447,26,273,161,136,199,384,313,19,368,208,60,289,188,268,420,322,387,245,79,105,11,385,257,396,35,122,27,4,493,269,416,479,213,367,202,87,68,373,455,376,130,47,290,89,428,186,234,378,215,220,492,3,478,231,317,312,92,252,91,149,127,118,383,44,242,155,237,348,398,194,469,354,483,8,415,407,456,154,69,29,114,325,485,211,117,48,25,100,198,437,444,212,95,124,298,236,74,328,410,159,324,355,13,403,465,109,319,258,476,12,350,459,272,417,235,164,23,125,34,265,496,42,152,108,254,375,381,82,446,267,411,167,229,440,176,251,58,104,57,404,204,377,338,286,66,85,391,382,358,207,422,54,99,327,1,226,181,253,165,463,157,196,414,346,300,193,392,360,180,271"
 
-    # Paste your tour here (keep the trailing comma if you want; we filter empties)
-    tour_str = """776,978,164,458,968,581,836,340,711,778,659,443,15,660,614,350,692,32,380,144,577,943,185,626,884,365,63,349,68,183,39,645,619,476,790,192,596,612,178,896,131,632,845,196,685,392,609,22,428,695,591,456,561,998,75,269,370,624,926,95,439,46,742,565,36,193,534,731,741,997,573,955,812,571,588,189,58,570,537,83,401,989,798,454,237,296,208,100,505,858,460,513,966,467,372,360,954,436,115,451,31,242,363,390,230,600,468,453,182,927,246,839,120,840,292,973,564,848,899,66,249,499,179,471,352,399,300,78,508,754,717,794,413,26,700,886,402,184,204,320,518,715,913,705,306,662,475,74,244,756,162,990,631,347,295,62,554,86,276,547,803,684,487,457,792,566,140,878,500,929,405,427,636,101,414,145,272,881,512,932,161,953,838,466,761,928,866,915,325,595,307,416,312,87,971,110,582,400,996,823,601,567,60,494,956,10,238,447,539,368,843,377,939,607,851,811,374,283,713,972,51,857,469,288,545,698,376,766,525,874,835,393,701,560,667,156,142,634,102,553,227,613,70,957,481,321,116,265,617,622,773,260,521,29,807,719,979,268,126,969,187,462,666,994,147,895,34,98,194,351,171,630,438,519,650,419,233,267,217,668,806,678,708,88,841,354,388,257,281,135,355,449,517,718,904,816,109,703,648,725,664,572,485,765,328,597,690,976,746,336,287,383,129,672,6,146,702,200,326,275,706,524,274,491,991,735,55,919,834,375,598,651,371,576,463,562,813,496,28,940,121,985,799,863,975,605,386,958,801,71,633,9,982,90,736,942,890,452,484,802,358,871,649,822,501,122,97,279,241,916,714,253,432,592,740,781,172,348,56,934,906,820,542,825,877,759,205,176,828,936,273,198,82,459,406,879,190,865,540,679,912,30,720,188,652,404,285,442,389,586,861,738,367,974,37,49,931,604,918,797,686,159,585,661,384,298,775,42,332,91,157,141,465,472,45,123,530,47,450,961,693,606,177,85,473,236,207,13,258,516,656,880,40,426,783,732,584,917,316,898,730,99,317,755,615,50,544,455,620,749,331,112,817,950,492,290,495,67,944,637,461,339,959,757,113,209,80,105,643,694,579,251,344,796,199,299,160,259,84,947,54,420,933,533,888,446,197,464,782,408,999,699,854,61,621,313,827,910,409,337,166,387,528,733,809,11,330,440,128,278,810,397,223,480,830,346,422,343,829,286,329,557,945,611,751,254,627,4,425,212,72,543,885,522,657,984,323,215,747,623,875,563,602,470,696,970,552,641,255,832,526,682,206,752,264,833,963,289,777,154,925,949,924,407,247,670,65,222,559,210,94,831,21,322,252,77,903,900,106,186,868,774,319,894,12,395,640,593,280,504,986,793,213,486,133,587,424,568,130,628,937,922,779,849,114,789,663,240,1,506,385,477,905,366,511,155,431,411,680,599,219,76,964,381,625,434,448,856,433,195,535,658,862,791,675,153,379,203,589,753,353,357,64,909,478,134,245,748,41,677,935,418,787,538,396,44,308,497,261,762,722,435,314,768,610,8,988,415,764,334,729,96,655,412,921,987,536,515,860,294,149,25,488,243,53,356,79,503,763,665,359,218,489,304,688,911,482,318,785,948,786,691,93,946,165,158,952,555,704,341,410,124,5,256,616,117,309,132,104,89,853,441,136,234,270,726,20,284,138,479,148,639,111,707,382,490,181,855,202,556,498,819,721,282,324,653,373,398,14,897,771,262,814,527,529,3,770,674,739,493,689,788,859,24,608,795,882,175,709,977,335,169,818,887,35,876,644,758,629,960,18,509,277,914,842,669,214,800,523,724,421,143,216,728,315,228,784,293,430,16,727,852,221,43,152,301,271,837,231,2,697,225,646,951,369,769,574,889,846,870,867,902,531,310,510,291,118,676,361,302,33,108,967,417,603,444,163,549,167,0,180,305,850,804,17,981,403,712,734,137,750,883,737,760,303,558,445,710,869,107,920,52,48,575,808,235,378,201,745,962,901,923,23,546,681,364,983,780,826,716,647,151,391,995,872,239,250,892,168,767,437,327,311,220,333,248,743,362,654,864,635,127,683,550,590,980,338,815,27,345,7,174,507,930,394,541,638,583,73,191,429,844,671,232,263,580,81,594,551,139,69,19,226,965,170,772,821,119,907,805,150,618,993,847,723,514,891,673,938,224,532,893,502,211,941,266,908,229,642,548,57,125,873,578,687,103,483,520,59,992,342,297,744,423,824,173,38,474,92,569"""
-
-    # --- Parse tour safely (handles trailing comma) ---
-    tour = np.array(
-        [int(x) for x in tour_str.replace("\n", "").split(",") if x.strip()],
-        dtype=int,
-    )
-
-    problem = TravelingSalesmanProblem(
-        distance_matrix=np.loadtxt(filename, delimiter=","),
-        filename=os.path.basename(filename),
-    )
-
-    # --- Sanity checks: size + permutation ---
-    n = problem.num_cities
-    print(f"Instance: {filename}")
-    print(f"Cities in instance: {n}")
-    print(f"Cities in tour:     {len(tour)}")
-
-    if len(tour) != n:
-        print("❌ Tour length does not match number of cities!")
-    else:
-        print("✅ Tour length matches number of cities.")
-
-    unique = len(set(tour.tolist()))
-    if unique != len(tour):
-        print(f"❌ Tour contains duplicates! unique={unique} total={len(tour)}")
-        # show some duplicates
-        from collections import Counter
-
-        dupes = [c for c, cnt in Counter(tour.tolist()).items() if cnt > 1]
-        print("Duplicate city ids (first 20):", dupes[:20])
-    else:
-        print("✅ Tour has no duplicates.")
-
-    # check range
-    if np.any(tour < 0) or np.any(tour >= n):
-        bad = tour[(tour < 0) | (tour >= n)]
-        print("❌ Tour contains out-of-range city ids:", bad[:20])
-    else:
-        print("✅ All city ids are within range 0..n-1.")
-
-    # --- Evaluate using Option 1 ---
-    ind = Individual(tour=tour)
-    length = ind.evaluate(problem)
-    print("Tour length:", length)
-    print("Valid tour:", np.isfinite(length))
-
-    # --- If invalid: find the FIRST inf edge (and show a few) ---
-    if not np.isfinite(length):
-        dm = problem.distance_matrix
-        inf_edges = []
-
-        for i in range(len(tour)):
-            a = int(tour[i])
-            b = int(tour[(i + 1) % len(tour)])  # wrap-around included
-            d = dm[a, b]
-            if np.isinf(d):
-                inf_edges.append((i, a, b))
-
-        print(f"\nFound {len(inf_edges)} invalid (inf) edges.")
-        if inf_edges:
-            i, a, b = inf_edges[0]
-            print(f"First invalid edge at position {i}: {a} -> {b} is inf")
-
-            print("\nFirst 10 invalid edges (pos, a->b):")
-            for pos, aa, bb in inf_edges[:10]:
-                print(f"  {pos:4d}: {aa} -> {bb}")
-
-            # also show the closing edge explicitly
-            last_a = int(tour[-1])
-            first_b = int(tour[0])
-            print(
-                f"\nClosing edge (last -> first): {last_a} -> {first_b} = {dm[last_a, first_b]}"
-            )
+    length = evaluate_tour_from_csv_string(dist_csv, tour_csv)
+    print(f"Tour length: {length:.2f}")
