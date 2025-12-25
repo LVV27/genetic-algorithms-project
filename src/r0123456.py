@@ -98,10 +98,6 @@ class GAParams:
     LSO_ALWAYS_IMPROVE_TOP_K: int = 2  # Always apply to top K offspring
     LSO_LOG_COUNTS: bool = False  # Log how many get local search
 
-    # ===== Diversity Preservation =====
-    USE_CROWDING: bool = True  # Use deterministic crowding for survivor selection
-    DIVERSITY_PRESERVATION: float = 0.3  # Fraction of population selected for diversity
-
     # ===== Sparse Graph Strategy =====
     SPARSITY_THRESHOLD: float = 0.1  # Fraction of inf edges to trigger sparse mode
     SPARSE_OFFSPRING_TARGET_MULTIPLIER: int = (
@@ -1343,59 +1339,6 @@ def elimination_with_crowding(
     return survivors[:population_size]
 
 
-def elimination_diversity_preserved(
-    population: List[Individual],
-    offspring: List[Individual],
-    population_size: int,
-) -> List[Individual]:
-    """
-    Survivor selection with explicit diversity preservation.
-
-    Strategy:
-        1. Keep elite individuals (best fitness)
-        2. Fill remaining slots with individuals maximizing fitness distance
-
-    This ensures both quality and diversity in the population.
-    """
-    combined = population + offspring
-
-    if len(combined) <= population_size:
-        return combined
-
-    # Sort by fitness
-    combined.sort(key=lambda ind: ind.fitness)
-
-    # Reserve slots for elite
-    elite_count = int(population_size * (1 - GA.DIVERSITY_PRESERVATION))
-    survivors = combined[:elite_count]
-    candidates = combined[elite_count:]
-
-    # Greedily add individuals that maximize fitness distance
-    while len(survivors) < population_size and candidates:
-        best_candidate = None
-        best_score = -1.0
-
-        for candidate in candidates:
-            avg_distance = float(
-                np.mean([abs(candidate.fitness - s.fitness) for s in survivors])
-            )
-            if avg_distance > best_score:
-                best_candidate = candidate
-                best_score = avg_distance
-
-        if best_candidate is None:
-            break
-
-        survivors.append(best_candidate)
-        candidates.remove(best_candidate)
-
-    # Fill any remaining slots
-    while len(survivors) < population_size and candidates:
-        survivors.append(candidates.pop(0))
-
-    return survivors
-
-
 # ==============================================================
 # SPARSITY DETECTION
 # ==============================================================
@@ -1485,10 +1428,6 @@ class r0123456:
             # Survivor selection
             population = (
                 elimination_with_crowding(population, offspring, GA.POPULATION_SIZE)
-                if GA.USE_CROWDING
-                else elimination_diversity_preserved(
-                    population, offspring, GA.POPULATION_SIZE
-                )
             )
 
             # Track best solution
@@ -1821,7 +1760,6 @@ def evaluate_tour_from_csv_string(
 
 
 if __name__ == "__main__":
-
     dist_csv = "src/benchmark/tour500.csv"
     tour_csv = "316,20,487,399,372,402,210,279,306,9,336,335,247,131,468,135,139,7,320,17,394,344,486,283,225,119,128,51,278,303,266,201,137,244,386,259,22,460,380,246,400,73,497,349,445,475,452,430,321,41,133,147,309,81,5,88,134,439,491,78,214,185,343,361,441,302,351,67,238,477,115,166,495,261,264,49,424,197,140,490,110,390,90,457,217,64,221,341,63,112,255,443,101,484,200,56,305,129,59,308,209,418,138,295,241,461,326,397,314,472,310,32,432,426,481,436,132,62,102,412,43,178,409,371,123,223,329,275,160,145,421,458,94,76,307,389,172,106,113,240,356,388,413,33,111,262,339,222,342,179,203,498,291,120,427,453,331,98,284,163,249,61,45,6,442,18,406,230,144,40,464,77,30,489,10,274,28,337,24,84,153,80,103,151,270,340,224,488,467,374,474,107,227,419,281,448,260,218,146,292,470,156,36,280,250,175,37,184,334,256,31,379,393,46,248,239,480,116,190,71,401,75,219,433,454,168,0,318,177,296,431,162,192,323,86,126,363,333,304,72,263,423,482,142,276,365,299,158,191,55,38,364,216,311,471,141,70,369,301,21,93,395,50,143,330,362,39,332,195,232,408,96,228,405,174,183,285,206,435,2,297,205,182,14,357,16,169,462,97,287,425,315,352,494,288,434,52,366,171,170,293,187,121,189,359,83,449,473,148,233,450,438,451,243,345,150,53,499,173,466,282,277,15,429,353,370,294,65,347,447,26,273,161,136,199,384,313,19,368,208,60,289,188,268,420,322,387,245,79,105,11,385,257,396,35,122,27,4,493,269,416,479,213,367,202,87,68,373,455,376,130,47,290,89,428,186,234,378,215,220,492,3,478,231,317,312,92,252,91,149,127,118,383,44,242,155,237,348,398,194,469,354,483,8,415,407,456,154,69,29,114,325,485,211,117,48,25,100,198,437,444,212,95,124,298,236,74,328,410,159,324,355,13,403,465,109,319,258,476,12,350,459,272,417,235,164,23,125,34,265,496,42,152,108,254,375,381,82,446,267,411,167,229,440,176,251,58,104,57,404,204,377,338,286,66,85,391,382,358,207,422,54,99,327,1,226,181,253,165,463,157,196,414,346,300,193,392,360,180,271"
 
