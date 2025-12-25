@@ -6,7 +6,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
+import copy
+
 import numpy as np
+
+import numba
 
 # ==============================================================
 # LOGGING
@@ -47,14 +51,14 @@ class GAParams:
     # Population
     POPULATION_SIZE: int = 100  # λ
     OFFSPRING_SIZE: int = 100  # μ
-    GENERATIONS: int = 10_000
+    GENERATIONS: int = 10_000_000
 
     # Selection
-    TOURNAMENT_K: int = 2
+    TOURNAMENT_K: int = 7
 
     # Mutation (self-adaptive within [min, max])
-    MUTATION_ALPHA_MIN: float = 0.02
-    MUTATION_ALPHA_MAX: float = 0.20
+    MUTATION_ALPHA_MIN: float = 0.04
+    MUTATION_ALPHA_MAX: float = 0.12
     DIVERSITY_CHECK_INTERVAL: int = 5
 
     # Crossover
@@ -62,26 +66,21 @@ class GAParams:
 
     # Greedy seeding
     GREEDY_SEED_COUNT: int = 5
-    GREEDY_RESTARTS: int = 50
+    GREEDY_RESTARTS: int = 100
 
     # Local search (2-opt and 3-opt)
     LOCAL_SEARCH_ENABLED: bool = True
-    LOCAL_SEARCH_MAX_ITERS: int = 10
-
-    # 3-opt settings
-    USE_THREE_OPT: bool = False
-    THREE_OPT_TOP_K: int = 5  # Apply 3-opt to top 5 offspring
-    THREE_OPT_MAX_ITERS: int = 2  # 3-opt is expensive, keep iterations low
-
-    # Diversity preservation
-    USE_CROWDING: bool = True
-    DIVERSITY_PRESERVATION: float = 0.3
+    LOCAL_SEARCH_MAX_ITERS: int = 1
 
     # When to apply 2-opt (keep it selective to save time)
     LSO_APPLY_IF_BEATS_ANY_PARENT: bool = True
     LSO_NEAR_BEST_FRAC: float = 0.01
-    LSO_ALWAYS_IMPROVE_TOP_K: int = 20
+    LSO_ALWAYS_IMPROVE_TOP_K: int = 2
     LSO_LOG_COUNTS: bool = False
+
+    # Diversity preservation
+    USE_CROWDING: bool = True
+    DIVERSITY_PRESERVATION: float = 0.3
 
 
 GA = GAParams()
@@ -206,28 +205,52 @@ class Individual:
         self.fitness: Optional[float] = None
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
-        """
-        Compute and store the total tour length.
+        # self.fitness = evaluate_tour_no_numba(self=self, problem=problem)
+        self.fitness = evaluate_tour_numba(self.tour, problem.distance_matrix)
+        return self.fitness
 
-        Returns:
-            Total distance of the tour, or np.inf if an edge is invalid.
-        """
-        num_cities = len(self.tour)
-        total_distance = 0.0
 
-        for index in range(num_cities):
-            city = int(self.tour[index])
-            next_city = int(self.tour[(index + 1) % num_cities])
+def evaluate_tour_no_numba(self, problem: TravelingSalesmanProblem) -> float:
+    """
+    Compute and store the total tour length.
 
-            distance = problem.get_distance(city, next_city)
-            if np.isinf(distance):
-                self.fitness = np.inf
-                return self.fitness
+    Returns:
+        Total distance of the tour, or np.inf if an edge is invalid.
+    """
+    num_cities = len(self.tour)
+    total_distance = 0.0
 
-            total_distance += distance
+    for index in range(num_cities):
+        city = int(self.tour[index])
+        next_city = int(self.tour[(index + 1) % num_cities])
 
-        self.fitness = total_distance
-        return total_distance
+        distance = problem.get_distance(city, next_city)
+        if np.isinf(distance):
+            self.fitness = np.inf
+            return self.fitness
+
+        total_distance += distance
+
+    self.fitness = total_distance
+    return total_distance
+
+
+@numba.njit(cache=True)
+def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
+    total = 0.0
+    n = tour.shape[0]
+
+    for i in range(n):
+        a = tour[i]
+        b = tour[(i + 1) % n]
+        d = distance_matrix[a, b]
+
+        if np.isinf(d):
+            return np.inf
+
+        total += d
+
+    return total
 
 
 # ==============================================================
@@ -271,9 +294,166 @@ def population_diversity(population: List[Individual]) -> float:
     return len(unique_tours) / len(population)
 
 
+def edge_diversity(population: List[Individual]) -> float:
+    if not population:
+        return 0.0
+
+    edge_sets = []
+    n = len(population[0].tour)
+
+    for ind in population:
+        tour = ind.tour
+        edges = set()
+        for i in range(n):
+            a = tour[i]
+            b = tour[(i + 1) % n]
+            edges.add((a, b))
+            edges.add((b, a))  # undirected
+        edge_sets.append(edges)
+
+    union_edges = set.union(*edge_sets)
+    max_edges = len(population) * n * 2
+
+    return len(union_edges) / max_edges
+
+
+
 # ==============================================================
-# GREEDY HEURISTIC (for seeding)
+# POPULATION INITIALIZATION (sparse-aware)
 # ==============================================================
+
+
+def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
+    n = len(tour)
+    if n < 8:
+        return tour.copy()
+
+    p1, p2, p3 = sorted(random.sample(range(1, n), 3))
+    return np.concatenate([tour[:p1], tour[p2:p3], tour[p1:p2], tour[p3:]])
+
+
+def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
+    tour = tour.copy()
+    n = len(tour)
+    for _ in range(k):
+        i, j = random.sample(range(n), 2)
+        tour[i], tour[j] = tour[j], tour[i]
+    return tour
+
+
+def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
+    tour = tour.copy()
+    i, j = sorted(random.sample(range(len(tour)), 2))
+    tour[i : j + 1] = tour[i : j + 1][::-1]
+    return tour
+
+
+def apply_perturbation(tour: np.ndarray, strength: str) -> np.ndarray:
+    n = len(tour)
+
+    if strength == "light":
+        return perturb_multi_swap(tour, max(1, n // 200))
+
+    if strength == "medium":
+        return random.choice(
+            [
+                lambda t: perturb_double_bridge(t),
+                lambda t: perturb_multi_swap(t, max(2, n // 100)),
+                lambda t: perturb_segment_reverse(t),
+            ]
+        )(tour)
+
+    # heavy
+    t = tour.copy()
+    for _ in range(2):
+        t = random.choice(
+            [
+                perturb_double_bridge,
+                lambda x: perturb_multi_swap(x, max(3, n // 50)),
+                perturb_segment_reverse,
+            ]
+        )(t)
+    return t
+
+
+def repair_tour(
+    problem: TravelingSalesmanProblem,
+    tour: np.ndarray,
+    max_repairs: int = 100,
+) -> np.ndarray | None:
+    """
+    Attempt to repair a tour by fixing invalid (inf) edges via local swaps.
+    Returns a repaired tour or None if repair fails.
+    """
+    tour = tour.copy()
+    n = len(tour)
+
+    for _ in range(max_repairs):
+        repaired_any = False
+
+        for i in range(n):
+            a = tour[i]
+            b = tour[(i + 1) % n]
+
+            if not np.isfinite(problem.get_distance(a, b)):
+                # Try swapping b with a later city c
+                for j in range(i + 2, n):
+                    c = tour[j]
+
+                    if np.isfinite(problem.get_distance(a, c)) and np.isfinite(
+                        problem.get_distance(c, b)
+                    ):
+                        tour[(i + 1) % n], tour[j] = tour[j], tour[(i + 1) % n]
+                        repaired_any = True
+                        break
+
+                if not repaired_any:
+                    return None  # unrecoverable edge
+
+        if not repaired_any:
+            return tour  # fully repaired
+
+    return None
+
+
+def fill_with_perturbations(
+    problem: TravelingSalesmanProblem,
+    base_population: List[Individual],
+    target_size: int,
+) -> int:
+    added = 0
+    attempts = 0
+    max_attempts = (target_size - len(base_population)) * 50
+
+    templates = sorted(base_population, key=lambda ind: ind.fitness)
+    templates = templates[: max(1, len(templates) // 2)]
+
+    while len(base_population) < target_size and attempts < max_attempts:
+        attempts += 1
+        parent = random.choice(templates)
+
+        strength = random.choices(
+            ["light", "medium", "heavy"],
+            weights=[0.4, 0.4, 0.2],
+            k=1,
+        )[0]
+
+        tour = apply_perturbation(parent.tour, strength)
+        ind = Individual(tour=tour, mutation_rate=parent.mutation_rate)
+        ind.evaluate(problem)
+
+        if not np.isfinite(ind.fitness):
+            repaired = repair_tour(problem, tour)
+            if repaired is None:
+                continue
+            ind = Individual(tour=repaired, mutation_rate=parent.mutation_rate)
+            ind.evaluate(problem)
+
+        if np.isfinite(ind.fitness):
+            base_population.append(ind)
+            added += 1
+
+    return added
 
 
 def nearest_neighbor_greedy(
@@ -314,66 +494,21 @@ def nearest_neighbor_greedy(
     return np.asarray(tour, dtype=int)
 
 
-# ==============================================================
-# POPULATION INITIALIZATION (sparse-aware)
-# ==============================================================
-
-
-def estimate_random_tour_feasibility(
-    problem: TravelingSalesmanProblem,
-) -> tuple[float, float, bool]:
-    """
-    Estimate graph sparsity and whether random tours are likely feasible.
-
-    Returns:
-        missing_edge_fraction: fraction of off-diagonal edges that are np.inf
-        prob_valid_random_tour: heuristic probability a random tour is valid
-        allow_random_fill: True if random fill is worth attempting
-    """
-    n = problem.num_cities
-    dm = problem.distance_matrix
-
-    off_diag = ~np.eye(n, dtype=bool)
-    missing_edge_fraction = float(np.isinf(dm[off_diag]).sum()) / float(n * (n - 1))
-
-    # Heuristic: probability all n required edges exist.
-    prob_valid_random_tour = (1.0 - missing_edge_fraction) ** n
-    allow_random_fill = prob_valid_random_tour >= 1e-6
-
-    return missing_edge_fraction, prob_valid_random_tour, allow_random_fill
-
-
-def compute_greedy_budgets(
-    population_size: int,
-    allow_random_fill: bool,
-) -> tuple[int, int]:
-    """
-    Decide how many greedy seeds and greedy restarts to use.
-    If random fill is unlikely, increase greedy restart budget and seed count.
-    """
-    greedy_seed_target = GA.GREEDY_SEED_COUNT
-    greedy_restart_budget = GA.GREEDY_RESTARTS
-
-    if not allow_random_fill:
-        greedy_restart_budget = max(greedy_restart_budget, population_size * 40)
-        greedy_seed_target = max(greedy_seed_target, min(population_size, 20))
-
-    return greedy_seed_target, greedy_restart_budget
-
-
 def generate_greedy_candidates(
     problem: TravelingSalesmanProblem,
     restart_budget: int,
 ) -> List[Individual]:
     """
-    Generate valid individuals by running nearest-neighbor greedy from many start cities.
+    Generate greedy nearest-neighbor tours from many start cities.
+    Only valid (finite) tours are returned.
     """
     n = problem.num_cities
-    start_cities = random.sample(range(n), k=min(n, restart_budget))
+    starts = random.sample(range(n), k=min(n, restart_budget))
 
     candidates: List[Individual] = []
-    for start_city in start_cities:
-        tour = nearest_neighbor_greedy(problem, start_city)
+
+    for start in starts:
+        tour = nearest_neighbor_greedy(problem, start)
         if tour is None:
             continue
 
@@ -391,16 +526,15 @@ def select_best_unique_seeds(
     seed_target: int,
 ) -> tuple[List[Individual], set]:
     """
-    Keep the best `seed_target` candidates, deduplicated by exact tour (and fitness key).
-    Returns:
-        seeds: selected individuals
-        seen_keys: dedup keys used (useful for logging counts)
+    Select the best unique tours (by exact sequence).
+    Returns selected individuals and the set of seen tour keys.
     """
     seeds: List[Individual] = []
-    seen_keys = set()
+    seen_keys: set = set()
 
     for ind in sorted(candidates, key=lambda x: x.fitness):
-        key = (int(ind.fitness), tuple(ind.tour))  # stable-ish dedup
+        key = tuple(ind.tour.tolist())
+
         if key in seen_keys:
             continue
 
@@ -413,90 +547,76 @@ def select_best_unique_seeds(
     return seeds, seen_keys
 
 
-def clone_to_size(population: List[Individual], target_size: int) -> None:
-    """
-    Clone existing individuals (copy tour + mutation rate + fitness) until target_size is reached.
-    """
-    while len(population) < target_size and population:
-        parent = random.choice(population)
-        clone = Individual(
-            tour=np.copy(parent.tour), mutation_rate=parent.mutation_rate
-        )
-        clone.fitness = parent.fitness
-        population.append(clone)
-
-
-def fill_with_random_valid(
-    problem: TravelingSalesmanProblem,
+def clone_to_size(
     population: List[Individual],
     target_size: int,
-    max_attempts: int,
-) -> None:
+) -> int:
     """
-    Add random individuals that evaluate to a finite fitness, until target size or attempts exhausted.
+    Clone existing individuals until population reaches target_size.
+    Returns number of clones added.
     """
-    attempts = 0
-    while len(population) < target_size and attempts < max_attempts:
-        ind = Individual(problem=problem)
-        if np.isfinite(ind.evaluate(problem)):
-            population.append(ind)
-        attempts += 1
+    if not population:
+        return 0
+
+    added = 0
+    base = len(population)
+    i = 0
+
+    while len(population) < target_size:
+        population.append(copy.deepcopy(population[i % base]))
+        i += 1
+        added += 1
+
+    return added
 
 
 def initialize_population_greedy_sparse_aware(
     problem: TravelingSalesmanProblem,
     population_size: int,
 ) -> List[Individual]:
-    """
-    Initialize a GA population for a (possibly sparse) TSP.
-
-    High-level:
-      - Use greedy nearest-neighbor tours as seeds (multiple restarts).
-      - If random tours are likely feasible, fill the rest randomly.
-      - If not (graph too sparse), clone seeds to reach the required size.
-    """
-    # 1) Decide if random tours are worth attempting
-    _, _, allow_random_fill = estimate_random_tour_feasibility(problem)
-    greedy_seed_target, greedy_restart_budget = compute_greedy_budgets(
-        population_size=population_size,
-        allow_random_fill=allow_random_fill,
+    # --------------------------------------------------------------
+    # 1) Generate greedy seeds
+    # --------------------------------------------------------------
+    greedy_candidates = generate_greedy_candidates(
+        problem,
+        restart_budget=max(GA.GREEDY_RESTARTS, population_size * 20),
     )
 
-    # 2) Generate greedy candidates and keep best unique seeds
-    greedy_candidates = generate_greedy_candidates(problem, greedy_restart_budget)
-    population, seen_keys = select_best_unique_seeds(
-        greedy_candidates, greedy_seed_target
+    population, _ = select_best_unique_seeds(
+        greedy_candidates,
+        GA.GREEDY_SEED_COUNT,
     )
 
-    # 3) Fill population up to requested size
-    if allow_random_fill:
-        fill_with_random_valid(
-            problem=problem,
-            population=population,
-            target_size=population_size,
-            max_attempts=population_size * 10_000,
-        )
-    else:
-        clone_to_size(population, population_size)
+    greedy_count = len(population)
 
-    # 4) Safety net: enforce a small minimum population
-    min_population = max(3, population_size // 10)
-    if len(population) < min_population:
-        logger.error(f"Critical: Only {len(population)} valid individuals found.")
-        clone_to_size(population, min_population)
+    if greedy_count == 0:
+        raise RuntimeError("No valid greedy tours found")
 
-    # 5) Logging
+    # --------------------------------------------------------------
+    # 2) Fill with perturbations of greedy solutions
+    # --------------------------------------------------------------
+    perturb_count = fill_with_perturbations(
+        problem,
+        population,
+        population_size,
+    )
+
+    # --------------------------------------------------------------
+    # 3) Clone only if absolutely necessary
+    # --------------------------------------------------------------
+    clone_count = 0
     if len(population) < population_size:
-        logger.warning(
-            f"Incomplete population: {len(population)}/{population_size} individuals"
-        )
-    else:
-        greedy_count = min(len(seen_keys), greedy_seed_target)
-        other_count = len(population) - greedy_count
-        logger.info(
-            f"Initialized {len(population)} individuals "
-            f"({greedy_count} greedy, {other_count} random/clone)"
-        )
+        clone_count = clone_to_size(population, population_size)
+
+    # --------------------------------------------------------------
+    # 4) Logging
+    # --------------------------------------------------------------
+    logger.info(
+        f"Initialized {len(population)} individuals "
+        f"({greedy_count} greedy, "
+        f"{perturb_count} perturbations, "
+        f"{clone_count} clone)"
+    )
 
     return population
 
@@ -538,14 +658,6 @@ def mutation_inversion(tour: np.ndarray) -> None:
     tour[start : end + 1] = tour[start : end + 1][::-1]
 
 
-def mutation_scramble(tour: np.ndarray) -> None:
-    """Randomly shuffle the cities inside a segment."""
-    start, end = sorted(random.sample(range(len(tour)), 2))
-    segment = tour[start : end + 1].copy()
-    random.shuffle(segment)
-    tour[start : end + 1] = segment
-
-
 def mutation_insertion(individual: Individual) -> None:
     """Remove one city and insert it at another position."""
     tour = individual.tour
@@ -572,8 +684,8 @@ def mutation(individual: Individual) -> None:
     if random.random() >= individual.mutation_rate:
         return
 
-    operators = ["swap", "inversion", "scramble", "insertion"]
-    weights = [0.25, 0.35, 0.25, 0.15]
+    operators = ["swap", "inversion", "insertion"]
+    weights = [0.25, 0.55, 0.20]
 
     choice = random.choices(operators, weights=weights, k=1)[0]
 
@@ -581,8 +693,6 @@ def mutation(individual: Individual) -> None:
         mutation_swap(individual.tour)
     elif choice == "inversion":
         mutation_inversion(individual.tour)
-    elif choice == "scramble":
-        mutation_scramble(individual.tour)
     else:
         mutation_insertion(individual)
 
@@ -974,274 +1084,122 @@ def two_opt_local_search(
     max_iters: int = 5,
     cache: Optional[TwoOptMoveCache] = None,
 ) -> Individual:
-    """
-    Robust 2-opt that strictly prevents invalid moves and handles repairs.
-    Includes caching to skip known bad moves.
-    """
     tour = individual.tour
-    n = len(tour)
     dm = problem.distance_matrix
+    feasible = problem.feasible
 
-    # Ensure we start with a correct fitness
     if individual.fitness is None:
         individual.evaluate(problem)
 
-    improved = True
     iteration = 0
 
-    while improved and iteration < max_iters:
-        improved = False
+    while iteration < max_iters:
         iteration += 1
 
-        for i in range(1, n - 1):
-            a = int(tour[i - 1])
-            b = int(tour[i])
+        i, j = find_first_2opt_improvement(tour, dm, feasible)
 
-            for j in range(i + 1, n):
-                nj = (j + 1) % n
-                c = int(tour[j])
-                d = int(tour[nj])
+        if i == -1:
+            break  # local optimum reached
 
-                # 0. CACHE CHECK
-                # If we've seen this specific move before and it was bad, skip it.
-                key: MoveKey = (a, b, c, d)
-                if cache is not None and cache.has(key):
-                    continue
+        # Apply swap
+        tour[i : j + 1] = tour[i : j + 1][::-1]
 
-                # 1. SAFETY CHECK: Check FIRST if NEW connections are valid.
-                # If (a->c) or (b->d) is infinite, this swap is illegal.
-                if np.isinf(dm[a, c]) or np.isinf(dm[b, d]):
-                    if cache is not None:
-                        cache.add(key)  # Mark as infeasible
-                    continue
-
-                # Calculate costs
-                cost_removed = dm[a, b] + dm[c, d]
-                cost_added = dm[a, c] + dm[b, d]
-
-                # 2. IMPROVEMENT LOGIC
-                should_swap = False
-
-                if np.isinf(cost_removed):
-                    # If the OLD tour was broken (inf), and the new connections
-                    # are finite (checked in step 1), this is ALWAYS an improvement (repair).
-                    should_swap = True
-                else:
-                    # Normal case: both old and new are finite
-                    delta = cost_added - cost_removed
-                    if delta < -1e-9:  # Strict improvement
-                        should_swap = True
-                    else:
-                        # Valid but not improving? Cache it so we don't check again.
-                        if cache is not None:
-                            cache.add(key)
-
-                if should_swap:
-                    # Perform the swap: reverse segment
-                    tour[i : j + 1] = tour[i : j + 1][::-1]
-                    improved = True
-
-                    # Break to restart search from the beginning (standard First Improvement)
-                    # Note: We don't update fitness incrementally here to avoid float drift,
-                    # we rely on the full evaluate() at the end.
-                    break
-
-            if improved:
-                break
-
-    # Always recalculate the TRUE fitness at the end
     individual.evaluate(problem)
     return individual
 
 
-# ==============================================================
-# LOCAL SEARCH (3-opt)
-# ==============================================================
+@numba.njit(cache=True)
+def find_first_2opt_improvement(
+    tour: np.ndarray,
+    dm: np.ndarray,
+    feasible: np.ndarray,
+) -> tuple[int, int]:
+    """
+    Scan tour and return (i, j) of the first improving 2-opt move.
+    Returns (-1, -1) if none found.
+    """
+    n = tour.shape[0]
+
+    for i in range(1, n - 1):
+        a = tour[i - 1]
+        b = tour[i]
+
+        for j in range(i + 1, n):
+            nj = (j + 1) % n
+            c = tour[j]
+            d = tour[nj]
+
+            # Safety check: new edges must be finite
+            if not feasible[a, c] or not feasible[b, d]:
+                continue
+
+            cost_removed = dm[a, b] + dm[c, d]
+            cost_added = dm[a, c] + dm[b, d]
+
+            # Repair case
+            if np.isinf(cost_removed):
+                return i, j
+
+            # Strict improvement
+            if cost_added < cost_removed - 1e-9:
+                return i, j
+
+    return -1, -1
 
 
-def three_opt_local_search(
-    individual: Individual,
+# ===================
+# LNS
+# ===================
+
+def lns_destroy_repair(
     problem: TravelingSalesmanProblem,
-    max_iters: int = 2,
-) -> Individual:
-    """
-    3-opt local search with delta evaluation.
-
-    Breaks 3 edges and tries all 7 valid reconnection patterns.
-    More powerful than 2-opt but O(n³) complexity.
-
-    For each triple (i, j, k) where i < j < k:
-    - Current tour: ... - a - [segment1] - b - c - [segment2] - d - e - [segment3] - f - ...
-    - Current edges: (a,b), (c,d), (e,f)
-    - Try 7 ways to reconnect these 3 segments (8th is original)
-    """
-    tour = individual.tour
+    tour: np.ndarray,
+    destroy_frac: float = 0.08,
+) -> Optional[np.ndarray]:
     n = len(tour)
+    k = int(n * destroy_frac)
 
-    if individual.fitness is None:
-        individual.evaluate(problem)
+    # 1) Remove k consecutive cities
+    # start = random.randint(0, n - k)
+    removed_idx = random.sample(range(n), k)
+    removed = list(tour[i] for i in removed_idx)
+    random.shuffle(removed)
 
-    dm = problem.distance_matrix
-    best_fitness = float(individual.fitness)
+    remaining = [c for c in tour if c not in removed]
 
-    for iteration in range(max_iters):
-        improved = False
+    # 2) Reinsert greedily
+    for city in removed:
+        best_pos = None
+        best_cost = float("inf")
 
-        # Try all combinations of 3 cut points
-        for i in range(n - 2):
-            for j in range(i + 2, n - 1):
-                for k in range(j + 2, n + 1):
-                    # Get cities at edge endpoints
-                    # Edge 1: tour[i] to tour[i+1]
-                    # Edge 2: tour[j] to tour[j+1]
-                    # Edge 3: tour[k%n] to tour[(k+1)%n]
+        for i in range(len(remaining)):
+            a = remaining[i - 1]
+            b = remaining[i]
+            if not np.isfinite(problem.get_distance(a, city)):
+                continue
+            if not np.isfinite(problem.get_distance(city, b)):
+                continue
 
-                    a = int(tour[i])
-                    b = int(tour[i + 1])
-                    c = int(tour[j])
-                    d = int(tour[j + 1])
-                    e = int(tour[k % n])
-                    f = int(tour[(k + 1) % n])
+            cost = (
+                problem.get_distance(a, city)
+                + problem.get_distance(city, b)
+                - problem.get_distance(a, b)
+            )
 
-                    # Current cost of these 3 edges
-                    current_cost = dm[a, b] + dm[c, d] + dm[e, f]
+            if cost < best_cost * (1.0 + random.uniform(-0.02, 0.02)):
+                best_cost = cost
+                best_pos = i
 
-                    # Skip if any current edge is invalid (shouldn't happen in valid tour)
-                    if np.isinf(current_cost):
-                        continue
+        if best_pos is None:
+            return None
 
-                    # Try all 7 reconnection patterns
-                    best_delta = 0
-                    best_case = None
+        remaining.insert(best_pos, city)
 
-                    # Case 1: Reverse middle segment [i+1, j]
-                    # New edges: (a,c), (b,d), (e,f)
-                    new_cost = dm[a, c] + dm[b, d] + dm[e, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 1
+    return np.array(remaining, dtype=int)
 
-                    # Case 2: Reverse last segment [j+1, k]
-                    # New edges: (a,b), (c,e), (d,f)
-                    new_cost = dm[a, b] + dm[c, e] + dm[d, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 2
+def destruction_fraction(stall_gens: int) -> float:
+    return 0.4  # nuclear
 
-                    # Case 3: Reverse both middle and last segments
-                    # New edges: (a,c), (b,e), (d,f)
-                    new_cost = dm[a, c] + dm[b, e] + dm[d, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 3
-
-                    # Case 4: Swap middle and last segments
-                    # New edges: (a,d), (e,b), (c,f)
-                    new_cost = dm[a, d] + dm[e, b] + dm[c, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 4
-
-                    # Case 5: Reverse middle, swap with last
-                    # New edges: (a,d), (e,c), (b,f)
-                    new_cost = dm[a, d] + dm[e, c] + dm[b, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 5
-
-                    # Case 6: Swap segments, reverse last
-                    # New edges: (a,e), (d,b), (c,f)
-                    new_cost = dm[a, e] + dm[d, b] + dm[c, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 6
-
-                    # Case 7: All segments involved reversed
-                    # New edges: (a,e), (d,c), (b,f)
-                    new_cost = dm[a, e] + dm[d, c] + dm[b, f]
-                    if np.isfinite(new_cost):
-                        delta = new_cost - current_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_case = 7
-
-                    # Apply best improving move if found
-                    if best_case is not None:
-                        # Extract the three segments
-                        seg1 = tour[i + 1 : j + 1].copy()
-                        seg2 = tour[j + 1 : k].copy() if k < n else tour[j + 1 :].copy()
-
-                        if best_case == 1:
-                            # Reverse middle segment
-                            tour[i + 1 : j + 1] = seg1[::-1]
-                        elif best_case == 2:
-                            # Reverse last segment
-                            if k < n:
-                                tour[j + 1 : k] = seg2[::-1]
-                            else:
-                                tour[j + 1 :] = seg2[::-1]
-                        elif best_case == 3:
-                            # Reverse both middle and last
-                            tour[i + 1 : j + 1] = seg1[::-1]
-                            if k < n:
-                                tour[j + 1 : k] = seg2[::-1]
-                            else:
-                                tour[j + 1 :] = seg2[::-1]
-                        elif best_case == 4:
-                            # Swap middle and last
-                            if k < n:
-                                tour[i + 1 : k] = np.concatenate([seg2, seg1])
-                            else:
-                                tour[i + 1 :] = np.concatenate([seg2, seg1])
-                        elif best_case == 5:
-                            # Reverse middle, swap with last
-                            if k < n:
-                                tour[i + 1 : k] = np.concatenate([seg2, seg1[::-1]])
-                            else:
-                                tour[i + 1 :] = np.concatenate([seg2, seg1[::-1]])
-                        elif best_case == 6:
-                            # Swap, reverse last
-                            if k < n:
-                                tour[i + 1 : k] = np.concatenate([seg2[::-1], seg1])
-                            else:
-                                tour[i + 1 :] = np.concatenate([seg2[::-1], seg1])
-                        elif best_case == 7:
-                            # All reversed
-                            if k < n:
-                                tour[i + 1 : k] = np.concatenate(
-                                    [seg2[::-1], seg1[::-1]]
-                                )
-                            else:
-                                tour[i + 1 :] = np.concatenate([seg2[::-1], seg1[::-1]])
-
-                        best_fitness += best_delta
-                        improved = True
-                        break
-
-                if improved:
-                    break
-            if improved:
-                break
-
-        # Stop if no improvement found
-        if not improved:
-            break
-
-    # individual.fitness = best_fitness
-    individual.evaluate(problem)
-    return individual
 
 
 # ==============================================================
@@ -1303,18 +1261,10 @@ def apply_local_search_hybrid(
     # Ensure fitness is available for sorting
     offspring.sort(key=lambda ind: ind.fitness)
 
-    # Phase 1: Apply 3-opt to very best offspring
-    if GA.USE_THREE_OPT and GA.THREE_OPT_TOP_K > 0:
-        top_k_3opt = min(GA.THREE_OPT_TOP_K, len(offspring))
-        for ind in offspring[:top_k_3opt]:
-            three_opt_local_search(ind, problem, max_iters=GA.THREE_OPT_MAX_ITERS)
-
     # Phase 2: Apply 2-opt to other promising offspring
     # (Skip the ones that already got 3-opt to avoid redundant work)
     top_k_2opt = int(GA.LSO_ALWAYS_IMPROVE_TOP_K)
-    selected_for_2opt_ids = {
-        id(ind) for ind in offspring[GA.THREE_OPT_TOP_K : top_k_2opt]
-    }
+    selected_for_2opt_ids = {id(ind) for ind in offspring[:top_k_2opt]}
 
     near_best_threshold = _compute_near_best_threshold(
         pop_best=pop_best_fitness,
@@ -1381,6 +1331,8 @@ class r0123456:
         )
         problem.print_info()
 
+        problem.feasible = np.isfinite(problem.distance_matrix)
+
         print_section("INITIALIZATION")
         population = initialize_population_greedy_sparse_aware(
             problem, GA.POPULATION_SIZE
@@ -1425,7 +1377,7 @@ class r0123456:
             if gen % 10 == 0:
                 dt = time.perf_counter() - checkpoint
                 checkpoint = time.perf_counter()
-                div = population_diversity(population)
+                div = edge_diversity(population)
                 logger.info(
                     "  Gen {g:4d} │ Mean: {m:12.2f} │ Best: {b:12.2f} │ Div: {d:8.2%} │ "
                     "Δt: {t:7.2f}s │ NoImp: {s:4d} (last@{l:4d})".format(
@@ -1438,6 +1390,31 @@ class r0123456:
                         l=last_improve_gen,
                     )
                 )
+
+            if stall_gens > 80 and gen % 20 == 0:
+                logger.info("DO SOMETHING")
+                logger.info("LNS")
+                frac = destruction_fraction(stall_gens)
+                cand = lns_destroy_repair(problem, best_overall.tour, destroy_frac=frac)
+                best_lns = None
+                best_fit = best_overall_fitness
+                for _ in range(20):  #← only TWO, keep it simple
+                    cand = lns_destroy_repair(problem, best_overall.tour, destroy_frac=frac)
+                    if cand is None:
+                        continue
+                ind = Individual(tour=cand)
+                ind.evaluate(problem)
+                two_opt_local_search(ind, problem, max_iters=30)
+                if ind.fitness < best_fit:
+                    best_lns = ind
+                    best_fit = ind.fitness
+                    if best_lns is not None:
+                        delta = best_lns.fitness - best_overall_fitness # Accept improvement OR small uphill move when stalled
+                        if delta < 0 or (stall_gens > 200 and delta < 30):
+                            population[0] = best_lns
+                            best_overall = best_lns
+                            best_overall_fitness = best_lns.fitness
+                            stall_gens = 0
 
             # Reporter handles time limit; negative means "stop"
             if self.reporter.report(gen_mean, gen_best.fitness, gen_best.tour) < 0:
@@ -1494,12 +1471,12 @@ class r0123456:
         )
 
         # In sparse graphs: fewer valid children per attempt → reduce target, raise attempts a bit
-        target = (
-            min(GA.OFFSPRING_SIZE, len(population) * 3)
-            if self.is_sparse
-            else GA.OFFSPRING_SIZE
-        )
-        max_attempts = target * (10 if self.is_sparse else 100)
+        if self.is_sparse:
+            target = GA.OFFSPRING_SIZE
+            max_attempts = target * 3   # NOT 10
+        else:
+            target = GA.OFFSPRING_SIZE
+            max_attempts = target * 50
 
         attempts = 0
         while len(offspring) < target and attempts < max_attempts:
@@ -1508,7 +1485,7 @@ class r0123456:
             p2 = tournament_selection(population, GA.TOURNAMENT_K)
 
             if self.is_sparse:
-                if random.random() < 0.4:
+                if random.random() < 0.15:
                     child = edge_recombination_crossover_sparse_aware(
                         problem, p1, p2
                     )  # evaluated inside
