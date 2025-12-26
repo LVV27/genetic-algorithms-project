@@ -293,35 +293,63 @@ def nearest_neighbor_greedy(
     start_city: int = 0,
 ) -> Optional[np.ndarray]:
     """
-    Nearest-neighbor heuristic: build tour by repeatedly visiting closest unvisited city.
+    Nearest-neighbor heuristic (Numba-accelerated).
     Returns None if construction fails (sparse graphs).
     """
-    num_cities = problem.num_cities
-    tour = [start_city]
-    visited = {start_city}
+    tour = nearest_neighbor_greedy_numba(
+        problem.distance_matrix,
+        start_city,
+    )
+
+    if tour[0] == -1:
+        return None
+
+    return tour
+
+
+@numba.njit(cache=True)
+def nearest_neighbor_greedy_numba(
+    distance_matrix: np.ndarray,
+    start_city: int,
+) -> np.ndarray:
+    """
+    Numba-accelerated nearest neighbor construction.
+
+    Returns:
+        Tour as array, or array filled with -1 if construction fails
+    """
+    num_cities = distance_matrix.shape[0]
+    tour = np.empty(num_cities, dtype=np.int32)
+    tour[0] = start_city
+
+    visited = np.zeros(num_cities, dtype=np.bool_)
+    visited[start_city] = True
+
     current_city = start_city
 
-    for _ in range(num_cities - 1):
-        best_distance = float("inf")
-        best_next_city = None
+    for step in range(1, num_cities):
+        best_distance = np.inf
+        best_next_city = -1
 
         for candidate in range(num_cities):
-            if candidate in visited:
+            if visited[candidate]:
                 continue
 
-            distance = problem.distance_matrix[current_city, candidate]
+            distance = distance_matrix[current_city, candidate]
             if distance < best_distance:
                 best_distance = distance
                 best_next_city = candidate
 
-        if best_next_city is None or np.isinf(best_distance):
-            return None
+        # Construction failed
+        if best_next_city == -1 or np.isinf(best_distance):
+            tour[:] = -1
+            return tour
 
-        tour.append(best_next_city)
-        visited.add(best_next_city)
+        tour[step] = best_next_city
+        visited[best_next_city] = True
         current_city = best_next_city
 
-    return np.array(tour, dtype=int)
+    return tour
 
 
 def initialize_population_mixed(
