@@ -83,14 +83,13 @@ class GAParams:
     ERX_PROB_SPARSE: float = 0.4  # Probability of using ERX in sparse graphs
 
     # ===== Initialization Parameters =====
-    GREEDY_SEED_COUNT: int = 5  # Number of best greedy solutions to seed population
+    GREEDY_SEED_COUNT: int = 20  # Number of best greedy solutions to seed population
     GREEDY_RESTARTS: int = (
         1000  # Number of different start cities for greedy construction
     )
 
     # ===== Local Search Parameters =====
-    LOCAL_SEARCH_ENABLED: bool = False
-    LOCAL_SEARCH_MAX_ITERS: int = 2  # Max iterations per 2-opt application
+    LOCAL_SEARCH_MAX_ITERS: int = 5  # Max iterations per 2-opt application
 
     # When to apply 2-opt (selective to save computation)
     LSO_APPLY_IF_BEATS_ANY_PARENT: bool = False  # Apply if offspring beats a parent
@@ -117,26 +116,25 @@ class GAParams:
     PERTURBATION_MAX_ATTEMPTS_MULTIPLIER: int = 50  # Max attempts = needed * this
 
     # ===== Large Neighborhood Search (LNS) Parameters =====
-    LNS_ENABLED: bool = False
     LNS_STALL_THRESHOLD: int = 200  # Apply LNS after this many stagnant generations
     LNS_CHECK_INTERVAL: int = 10  # Check every N generations when stalled
     LNS_NUM_RESTARTS: int = 50  # Number of LNS restart attempts
     LNS_2OPT_ITERS: int = 10  # 2-opt iterations after LNS reconstruction
     LNS_DESTROY_FRACTION: float = 0.4  # Fraction of tour to destroy/rebuild
     LNS_ACCEPTANCE_UPHILL_DELTA: int = (
-        5000  # Accept uphill moves up to this delta when stalled
+        1000  # Accept uphill moves up to this delta when stalled
     )
     LNS_ACCEPTANCE_STALL_THRESHOLD: int = 200  # Only accept uphill if stalled this long
 
     # ===== Logging Parameters =====
-    LOG_INTERVAL: int = 10  # Print statistics every N generations
+    LOG_INTERVAL: int = 100  # Print statistics every N generations
     LOG_SPARSE_OFFSPRING_STATS_INTERVAL: int = 20  # Log offspring generation stats
 
     # ===== Missing Edge Penalty =====
     # Whether to replace missing (Inf) edges with a large penalty cost.
     USE_PENALTY_FOR_INF: bool = True
     # Penalty multiplier: penalty = (max_finite_edge + 1) * INF_PENALTY_FACTOR
-    INF_PENALTY_FACTOR: float = 100
+    INF_PENALTY_FACTOR: float = 10
 
     # ===== Candidate List Strategy =====
     # How many nearest neighbours of each city should keep their original cost.
@@ -145,6 +143,21 @@ class GAParams:
 
 
 GA = GAParams()
+
+
+@dataclass(frozen=True)
+class GAFeatures:
+    USE_SPARSE_STRATEGY: bool = False
+    USE_DIVERSITY_INJECTION: bool = True
+    USE_STAGNATION_MUTATION_BOOST: bool = False
+    USE_ADAPTIVE_MUTATION_RATE: bool = False
+    USE_MUTATION_PERTURB: bool = False
+    USE_MUTATION_CLASSIC: bool = True
+    USE_LOCAL_SEARCH: bool = False
+    USE_LNS: bool = False
+
+
+FEATURES = GAFeatures()
 
 
 # ==============================================================
@@ -840,6 +853,24 @@ def initialize_population_greedy_sparse_aware(
     )
 
     return population
+
+
+def initialize_population_random(
+    problem: TravelingSalesmanProblem,
+    population_size: int,
+) -> List[Individual]:
+    population: List[Individual] = []
+
+    while len(population) < population_size:
+        ind = Individual(problem=problem)
+        ind.evaluate(problem)
+
+        if np.isfinite(ind.fitness):
+            population.append(ind)
+
+    logger.info(f"Initialized {len(population)} individuals (random)")
+    return population
+
 
 
 # ==============================================================
@@ -1660,13 +1691,16 @@ class r0123456:
             )
 
             # 🔥 Diversity injection (crank it up if collapsing)
-            if generation % GA.DIVERSITY_CHECK_INTERVAL == 0:
+            if (
+                FEATURES.USE_DIVERSITY_INJECTION
+                and generation % GA.DIVERSITY_CHECK_INTERVAL == 0
+            ):
                 injected = crank_diversity_injection(
                     problem,
                     population,
-                    target_diversity=0.010,  # tune
-                    replace_frac=0.20,
-                    accept_avg_overlap_max=0.35,
+                    target_diversity=0.1,  # tune
+                    replace_frac=0.6,
+                    accept_avg_overlap_max=0.5,
                 )
 
             # Track best solution
@@ -1683,7 +1717,7 @@ class r0123456:
                 stall_gens += 1
 
                 # Boost mutation when stalled
-                if stall_gens % 50 == 0:  # Every 50 stall generations
+                if FEATURES.USE_STAGNATION_MUTATION_BOOST and stall_gens % 50 == 0:
                     adaptive_mutation_stagnation(population, stall_gens)
 
             # Periodic logging
@@ -1700,7 +1734,7 @@ class r0123456:
 
             # Apply LNS when stalled
             if (
-                GA.LNS_ENABLED
+                FEATURES.USE_LNS
                 and stall_gens > GA.LNS_STALL_THRESHOLD
                 and generation % GA.LNS_CHECK_INTERVAL == 0
             ):
@@ -1755,7 +1789,8 @@ class r0123456:
         """
         # Detect sparsity on first generation
         if generation == 1:
-            self.is_sparse = is_sparse_matrix(problem.distance_matrix)
+            detected_sparse = is_sparse_matrix(problem.distance_matrix)
+            self.is_sparse = bool(detected_sparse and FEATURES.USE_SPARSE_STRATEGY)
             self._log_strategy()
 
         offspring: List[Individual] = []
@@ -1807,7 +1842,7 @@ class r0123456:
             )
 
         # Apply local search to promising offspring
-        if offspring and GA.LOCAL_SEARCH_ENABLED:
+        if offspring and FEATURES.USE_LOCAL_SEARCH:
             apply_local_search_hybrid(
                 offspring,
                 problem,
@@ -1861,11 +1896,15 @@ class r0123456:
             )
 
         # Adapt mutation rate if diversity was measured
-        if diversity is not None:
+        if FEATURES.USE_ADAPTIVE_MUTATION_RATE and diversity is not None:
             adaptive_mutation_rate(child, diversity)
 
         # Apply standard mutation
-        mutation_perturb(child)
+        if FEATURES.USE_MUTATION_PERTURB:
+            mutation_perturb(child)
+        elif FEATURES.USE_MUTATION_CLASSIC:
+            mutation(child)
+
         child.evaluate(problem)
 
         return child
@@ -2108,8 +2147,8 @@ def evaluate_tour_from_csv_string(
 
 
 if __name__ == "__main__":
-    dist_csv = "src/benchmark/tour500.csv"
-    tour_csv = "316,20,487,399,372,402,210,279,306,9,336,335,247,131,468,135,139,7,320,17,394,344,486,283,225,119,128,51,278,303,266,201,137,244,386,259,22,460,380,246,400,73,497,349,445,475,452,430,321,41,133,147,309,81,5,88,134,439,491,78,214,185,343,361,441,302,351,67,238,477,115,166,495,261,264,49,424,197,140,490,110,390,90,457,217,64,221,341,63,112,255,443,101,484,200,56,305,129,59,308,209,418,138,295,241,461,326,397,314,472,310,32,432,426,481,436,132,62,102,412,43,178,409,371,123,223,329,275,160,145,421,458,94,76,307,389,172,106,113,240,356,388,413,33,111,262,339,222,342,179,203,498,291,120,427,453,331,98,284,163,249,61,45,6,442,18,406,230,144,40,464,77,30,489,10,274,28,337,24,84,153,80,103,151,270,340,224,488,467,374,474,107,227,419,281,448,260,218,146,292,470,156,36,280,250,175,37,184,334,256,31,379,393,46,248,239,480,116,190,71,401,75,219,433,454,168,0,318,177,296,431,162,192,323,86,126,363,333,304,72,263,423,482,142,276,365,299,158,191,55,38,364,216,311,471,141,70,369,301,21,93,395,50,143,330,362,39,332,195,232,408,96,228,405,174,183,285,206,435,2,297,205,182,14,357,16,169,462,97,287,425,315,352,494,288,434,52,366,171,170,293,187,121,189,359,83,449,473,148,233,450,438,451,243,345,150,53,499,173,466,282,277,15,429,353,370,294,65,347,447,26,273,161,136,199,384,313,19,368,208,60,289,188,268,420,322,387,245,79,105,11,385,257,396,35,122,27,4,493,269,416,479,213,367,202,87,68,373,455,376,130,47,290,89,428,186,234,378,215,220,492,3,478,231,317,312,92,252,91,149,127,118,383,44,242,155,237,348,398,194,469,354,483,8,415,407,456,154,69,29,114,325,485,211,117,48,25,100,198,437,444,212,95,124,298,236,74,328,410,159,324,355,13,403,465,109,319,258,476,12,350,459,272,417,235,164,23,125,34,265,496,42,152,108,254,375,381,82,446,267,411,167,229,440,176,251,58,104,57,404,204,377,338,286,66,85,391,382,358,207,422,54,99,327,1,226,181,253,165,463,157,196,414,346,300,193,392,360,180,271"
+    dist_csv = "src/benchmark/tour750.csv"
+    tour_csv = "92,446,37,254,396,229,323,472,296,362,480,649,586,90,426,720,143,67,674,514,265,691,234,193,646,504,245,463,579,351,214,604,132,46,484,661,680,40,736,518,675,225,43,567,454,131,177,590,304,62,172,176,605,298,117,50,212,714,505,194,699,507,73,55,443,520,220,34,31,113,237,57,119,636,491,373,692,133,153,739,89,20,91,727,24,553,407,663,191,599,3,623,530,218,164,738,215,497,703,83,717,558,243,244,232,408,106,552,197,64,32,203,283,189,27,702,21,523,316,495,345,412,537,474,12,540,460,68,201,724,689,693,103,647,568,75,458,301,705,314,654,365,291,151,15,77,332,591,743,668,701,181,733,485,109,248,584,148,145,667,595,233,696,343,105,451,528,239,594,746,144,626,300,198,449,625,442,141,587,7,134,394,9,585,716,184,427,421,327,742,487,348,452,51,563,608,157,683,430,659,434,517,321,310,317,609,108,288,428,66,159,534,289,231,393,258,457,488,747,251,359,531,559,278,741,629,719,439,49,69,635,502,554,640,149,331,58,36,477,459,82,190,468,435,200,270,284,271,209,45,180,380,735,631,299,473,573,501,260,54,600,175,121,128,61,236,606,387,549,39,41,481,207,498,557,135,222,614,146,102,130,644,170,1,542,409,202,110,6,728,564,311,492,361,281,476,676,124,493,276,383,581,519,732,87,71,539,432,238,541,178,16,571,65,455,388,688,282,308,302,211,536,76,114,274,402,360,379,598,42,628,358,619,545,2,417,166,96,438,706,565,127,666,651,292,85,23,471,242,722,319,633,744,35,47,224,371,526,167,489,38,208,346,610,147,216,726,320,335,700,386,704,592,374,513,324,697,368,257,617,397,363,494,686,677,18,414,561,400,154,580,328,17,441,401,369,384,86,470,285,466,548,188,333,186,652,120,411,112,521,690,235,344,376,749,169,707,370,624,653,615,506,576,419,510,632,246,694,59,382,195,249,79,662,729,570,252,30,630,129,596,543,656,511,469,219,535,404,496,179,698,60,329,48,483,679,657,582,734,424,440,464,713,84,395,643,4,685,538,204,410,74,399,650,524,533,500,28,627,721,660,221,486,5,588,453,711,347,355,745,115,601,616,93,572,682,253,22,338,378,94,279,259,315,574,391,342,611,621,444,171,695,708,294,475,160,352,290,456,357,478,168,142,174,162,658,318,593,330,490,509,390,99,227,275,583,44,155,671,437,566,267,673,665,366,429,562,78,230,158,715,392,138,196,577,681,687,433,367,269,748,569,206,26,508,415,532,205,479,403,389,642,312,262,163,462,306,405,418,192,337,710,98,560,313,637,56,136,118,293,295,527,709,353,217,655,684,126,272,546,95,123,280,372,0,544,634,622,63,712,731,223,450,104,261,551,669,529,25,381,467,336,645,213,522,613,137,307,247,597,122,325,445,639,406,210,718,125,638,737,165,515,139,375,150,161,241,341,555,81,648,297,8,385,482,33,11,730,664,339,356,603,461,413,70,255,266,575,286,448,334,422,183,512,423,52,612,303,268,322,287,350,111,100,273,420,602,13,101,152,182,187,672,326,589,226,72,107,305,88,97,185,53,354,556,264,173,525,29,516,607,425,670,465,240,618,256,398,723,19,263,277,740,377,364,620,578,228,80,349,199,550,499,340,309,431,156,250,10,547,447,416,14,725,678,116,436,503,140,641"
 
     length = evaluate_tour_from_csv_string(dist_csv, tour_csv)
     print(f"Tour length: {length:.2f}")
