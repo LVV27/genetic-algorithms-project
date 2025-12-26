@@ -4,7 +4,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import numba
@@ -50,7 +50,7 @@ class GAParams:
 
     # Population Parameters
     POPULATION_SIZE: int = 100  # λ
-    OFFSPRING_SIZE: int = 100  # μ
+    OFFSPRING_SIZE: int = 200  # μ
     GENERATIONS: int = 10_000_000
 
     # Selection Parameters
@@ -61,11 +61,11 @@ class GAParams:
     MUTATION_ALPHA_MAX: float = 0.20
 
     # Crossover Parameters
-    CROSSOVER_PROB: float = 0.8
+    CROSSOVER_PROB: float = 1
 
     # Initialization Parameters
-    GREEDY_FRACTION: float = 0.20  # Fraction of population initialized with greedy
-    GREEDY_ATTEMPTS_MULTIPLIER: int = 20  # Try this many greedy starts per target slot
+    GREEDY_FRACTION: float = 0.01  # Fraction of population initialized with greedy
+    GREEDY_ATTEMPTS_MULTIPLIER: int = 500  # Try this many greedy starts per target slot
 
     # Logging Parameters
     LOG_INTERVAL: int = 100
@@ -77,6 +77,11 @@ class GAParams:
     # Candidate list (0 to disable)
     CANDIDATE_LIST_SIZE: int = 0
 
+    # Local Search Parameters
+    USE_TWO_OPT: bool = True  # Enable / disable 2-opt local search
+    TWO_OPT_MAX_ITERS: int = 200  # Max iterations when enabled
+    TWO_OPT_FIND_BEST: bool = True  # True = best improvement, False = first improvement
+    SPARSITY_THRESHOLD: float = 0.10  # Skip 2-opt if >10% edges are infinite
 
 GA = GAParams()
 
@@ -129,8 +134,30 @@ class TravelingSalesmanProblem:
         # For sparse graphs: track which edges are valid
         self.feasible = np.isfinite(distance_matrix)
 
+        # Detect sparsity
+        self.is_sparse = self._is_sparse_matrix(distance_matrix)
+
         # Penalized matrix: replace Inf edges with large penalty
         self.penalized_matrix = self._build_penalized_matrix(distance_matrix)
+
+
+    def _is_sparse_matrix(self, distance_matrix: np.ndarray) -> bool:
+        """
+        Detect if distance matrix represents a sparse graph.
+
+        Sparse = many off-diagonal infinite edges (missing connections).
+
+        Returns:
+            True if sparsity exceeds configured threshold
+        """
+        n = distance_matrix.shape[0]
+        off_diagonal = ~np.eye(n, dtype=bool)
+        inf_count = int(np.isinf(distance_matrix[off_diagonal]).sum())
+        total = n * (n - 1)
+        sparsity = inf_count / total if total else 0.0
+
+
+        return sparsity > GA.SPARSITY_THRESHOLD
 
     def _build_penalized_matrix(self, distance_matrix: np.ndarray) -> np.ndarray:
         """Build distance matrix with penalties for missing edges."""
@@ -186,6 +213,7 @@ class TravelingSalesmanProblem:
         stats = {
             "Instance": self.filename or "Unknown",
             "Cities": self.num_cities,
+            "Sparse Graph": "Yes" if self.is_sparse else "No",
         }
 
         heuristic_value = self.HEURISTIC_VALUES.get(self.filename)
@@ -258,29 +286,6 @@ def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
         total += distance
 
     return total
-
-
-# ==============================================================
-# DIVERSITY MEASUREMENT
-# ==============================================================
-
-
-def edge_diversity(population: List[Individual]) -> float:
-    if not population:
-        return 0.0
-
-    tours = [ind.tour for ind in population]
-    pop_size = len(tours)
-    n = len(tours[0])
-
-    edges = set()
-
-    for t in tours:
-        for i in range(n):
-            edges.add((t[i], t[(i + 1) % n]))
-
-    denom = min(pop_size * n, n * (n - 1))
-    return len(edges) / denom
 
 
 # ==============================================================
@@ -629,6 +634,120 @@ def best_rival_index_by_edge_overlap(
 
 
 # ==============================================================
+# 2-OPT LOCAL SEARCH
+# ==============================================================
+
+
+def two_opt_local_search(
+    individual: Individual,
+    problem: TravelingSalesmanProblem,
+    max_iters: int = 5,
+    find_best: bool = False,
+) -> Individual:
+    """
+    Apply 2-opt local search: remove two edges and reconnect.
+    Continues until no improving move found or max iterations reached.
+    
+    Args:
+        find_best: If True, finds best improvement each iteration (slower but better quality).
+                   If False, applies first improvement found (faster).
+    """
+    tour = individual.tour
+    distance_matrix = problem.distance_matrix
+    feasible = problem.feasible
+
+    if individual.fitness is None:
+        individual.evaluate(problem)
+
+    iteration = 0
+
+    while iteration < max_iters:
+        iteration += 1
+
+        i, j = find_first_2opt_improvement(tour, distance_matrix, feasible, find_best)
+
+        if i == -1:
+            break  # Local optimum reached
+
+        tour[i : j + 1] = tour[i : j + 1][::-1]
+
+    individual.evaluate(problem)
+    return individual
+
+
+@numba.njit(cache=True)
+def find_first_2opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    find_best: bool = False,
+) -> Tuple[int, int]:
+    """
+    Find improving 2-opt move.
+    If find_best=True, searches all moves and returns best improvement.
+    If find_best=False, returns first improvement found.
+    Returns (i, j) for improvement, or (-1, -1) if none found.
+    """
+    n = tour.shape[0]
+    
+    best_i, best_j = -1, -1
+    best_improvement = 0.0
+
+    for i in range(1, n - 1):
+        a = tour[i - 1]
+        b = tour[i]
+
+        for j in range(i + 1, n):
+            next_j = (j + 1) % n
+            c = tour[j]
+            d = tour[next_j]
+
+            if not feasible[a, c] or not feasible[b, d]:
+                continue
+
+            cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
+            cost_added = distance_matrix[a, c] + distance_matrix[b, d]
+
+            if np.isinf(cost_removed):
+                if not find_best:
+                    return i, j
+                improvement = 1e10  # Large improvement for inf edges
+            else:
+                improvement = cost_removed - cost_added
+            
+            if improvement > 1e-9:
+                if not find_best:
+                    return i, j  # Return first improvement
+                elif improvement > best_improvement:
+                    best_improvement = improvement
+                    best_i, best_j = i, j
+
+    return best_i, best_j
+
+# ==============================================================
+# DIVERSITY MEASUREMENT (for logging)
+# ==============================================================
+
+
+def edge_diversity(population: List[Individual]) -> float:
+    if not population:
+        return 0.0
+
+    tours = [ind.tour for ind in population]
+    pop_size = len(tours)
+    n = len(tours[0])
+
+    edges = set()
+
+    for t in tours:
+        for i in range(n):
+            edges.add((t[i], t[(i + 1) % n]))
+
+    denom = min(pop_size * n, n * (n - 1))
+    return len(edges) / denom
+
+
+# ==============================================================
 # MAIN SOLVER
 # ==============================================================
 
@@ -650,7 +769,6 @@ class r0843621:
 
     def optimize(self, filename: str) -> int:
         """Main optimization routine."""
-        # Load problem
         problem = TravelingSalesmanProblem(
             self._read_distance_matrix(filename), os.path.basename(filename)
         )
@@ -659,69 +777,41 @@ class r0843621:
         # Initialize population
         print_section("INITIALIZATION")
         population = initialize_population_mixed(problem, GA.POPULATION_SIZE)
-        self._log_population_stats(population, "Initial Population")
 
-        # Track best solution
-        best_overall = min(population, key=lambda x: x.fitness)
-        best_overall_fitness = best_overall.fitness
-        stall_gens = 0
+        self._log_population_stats(population, "Initial Population")
+        self.best_overall = min(population, key=lambda x: x.fitness)
+        self.stall_gens = 0
+        start_time = checkpoint = time.perf_counter()
 
         # Evolution loop
         print_section("EVOLUTION")
-        start_time = time.perf_counter()
-        checkpoint = start_time
-
-        for generation in range(1, GA.GENERATIONS + 1):
-            # Generate offspring
+        for generation in range(0, GA.GENERATIONS):
+            # Evolve
             offspring = self._evolve_one_generation(population, problem)
-
-            # Survivor selection
             population = elimination_with_crowding(
                 population, offspring, GA.POPULATION_SIZE
             )
 
-            # Track best solution
+            # Local search & Track best
             gen_best = min(population, key=lambda x: x.fitness)
-            gen_mean = float(np.mean([ind.fitness for ind in population]))
+            self._process_best_solution(gen_best, problem, generation)
 
-            if gen_best.fitness < best_overall_fitness - 1e-9:
-                best_overall = gen_best
-                best_overall_fitness = gen_best.fitness
-                stall_gens = 0
-            else:
-                stall_gens += 1
-
-            # Periodic logging
+            # Logging
             if generation % GA.LOG_INTERVAL == 0:
-                elapsed = time.perf_counter() - checkpoint
-                checkpoint = time.perf_counter()
-                diversity = edge_diversity(population)
+                checkpoint = self._log_progress(generation, population, checkpoint)
 
-                logger.info(
-                    f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
-                    f"Best: {gen_best.fitness:12.2f} │ Div: {diversity:8.2%} │ "
-                    f"Δt: {elapsed:7.2f}s │ NoImp: {stall_gens:4d}"
+            # Report and check time limit
+            gen_mean = float(np.mean([ind.fitness for ind in population]))
+            if (
+                self.reporter.report(
+                    gen_mean, self.best_overall.fitness, self.best_overall.tour
                 )
-
-            # Check time limit
-            if self.reporter.report(gen_mean, gen_best.fitness, gen_best.tour) < 0:
+                < 0
+            ):
                 logger.info("\nTime limit reached")
                 break
 
-        # Final statistics
-        total_time = time.perf_counter() - start_time
-        print_section("RESULTS")
-        print_stats_table(
-            {
-                "Best Fitness": best_overall.fitness,
-                "Generations": generation,
-                "Total Time (s)": total_time,
-                "Avg Time/Gen (s)": total_time / generation,
-                "Final Diversity": edge_diversity(population),
-            }
-        )
-        logger.info("")
-
+        self._final_report(generation, population, start_time)
         return 0
 
     def _read_distance_matrix(self, filename: str) -> np.ndarray:
@@ -773,77 +863,65 @@ class r0843621:
             }
         )
 
+    def _process_best_solution(
+        self, gen_best: Individual, problem: TravelingSalesmanProblem, generation: int
+    ):
+        """Update global best and apply 2-opt improvement."""
+        # Check if this is a new best
+        if gen_best.fitness < self.best_overall.fitness - 1e-9:
+            # Only apply 2-opt on dense graphs
+            if GA.USE_TWO_OPT and not problem.is_sparse:
+                candidate = Individual(
+                    tour=np.copy(gen_best.tour), mutation_rate=gen_best.mutation_rate
+                )
+                candidate.fitness = gen_best.fitness
 
-# ==============================================================
-# 2-OPT LOCAL SEARCH (kept for future use)
-# ==============================================================
+                before = candidate.fitness
+                candidate = two_opt_local_search(
+                    candidate, problem, GA.TWO_OPT_MAX_ITERS, GA.TWO_OPT_FIND_BEST
+                )
 
+                if candidate.fitness < before - 1e-9:
+                    logger.info(
+                        f"2-opt improved best by {before - candidate.fitness:.2f} (Gen {generation})"
+                    )
+                    gen_best.tour = np.copy(candidate.tour)
+                    gen_best.fitness = candidate.fitness
 
-# def two_opt_local_search(
-#     individual: Individual,
-#     problem: TravelingSalesmanProblem,
-#     max_iters: int = 5,
-# ) -> Individual:
-#     """
-#     Apply 2-opt local search: remove two edges and reconnect.
-#     Continues until no improving move found or max iterations reached.
+            self.best_overall = Individual(
+                tour=np.copy(gen_best.tour), mutation_rate=gen_best.mutation_rate
+            )
+            self.best_overall.fitness = gen_best.fitness
+            self.stall_gens = 0
+        else:
+            self.stall_gens += 1
 
-#     Currently not integrated into main optimization loop.
-#     """
-#     tour = individual.tour
-#     distance_matrix = problem.distance_matrix
-#     feasible = problem.feasible
+    def _log_progress(
+        self, generation: int, population: List[Individual], checkpoint: float
+    ) -> float:
+        """Log generation statistics."""
+        elapsed = time.perf_counter() - checkpoint
+        gen_best = min(population, key=lambda x: x.fitness)
+        gen_mean = float(np.mean([ind.fitness for ind in population]))
 
-#     if individual.fitness is None:
-#         individual.evaluate(problem)
+        logger.info(
+            f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
+            f"Best: {gen_best.fitness:12.2f} │ Div: {edge_diversity(population):8.2%} │ "
+            f"Δt: {elapsed:7.2f}s │ NoImp: {self.stall_gens:4d}"
+        )
+        return time.perf_counter()
 
-#     iteration = 0
-
-#     while iteration < max_iters:
-#         iteration += 1
-
-#         i, j = find_first_2opt_improvement(tour, distance_matrix, feasible)
-
-#         if i == -1:
-#             break  # Local optimum reached
-
-#         tour[i : j + 1] = tour[i : j + 1][::-1]
-
-#     individual.evaluate(problem)
-#     return individual
-
-
-# @numba.njit(cache=True)
-# def find_first_2opt_improvement(
-#     tour: np.ndarray,
-#     distance_matrix: np.ndarray,
-#     feasible: np.ndarray,
-# ) -> Tuple[int, int]:
-#     """
-#     Find first improving 2-opt move.
-#     Returns (i, j) for improvement, or (-1, -1) if none found.
-#     """
-#     n = tour.shape[0]
-
-#     for i in range(1, n - 1):
-#         a = tour[i - 1]
-#         b = tour[i]
-
-#         for j in range(i + 1, n):
-#             next_j = (j + 1) % n
-#             c = tour[j]
-#             d = tour[next_j]
-
-#             if not feasible[a, c] or not feasible[b, d]:
-#                 continue
-
-#             cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
-#             cost_added = distance_matrix[a, c] + distance_matrix[b, d]
-
-#             if np.isinf(cost_removed):
-#                 return i, j
-
-#             if cost_added < cost_removed - 1e-9:
-#                 return i, j
-
-#     return -1, -1
+    def _final_report(
+        self, generation: int, population: List[Individual], start_time: float
+    ):
+        """Print final optimization summary."""
+        total_time = time.perf_counter() - start_time
+        print_section("RESULTS")
+        print_stats_table(
+            {
+                "Best Fitness": self.best_overall.fitness,
+                "Generations": generation,
+                "Total Time (s)": total_time,
+                "Final Diversity": edge_diversity(population),
+            }
+        )
