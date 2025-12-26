@@ -66,20 +66,6 @@ class GAParams:
     # Initialization Parameters
     GREEDY_FRACTION: float = 0.20  # Fraction of population initialized with greedy
 
-    # Diversity Management
-    DIVERSITY_CHECK_INTERVAL: int = 5
-    DIVERSITY_TARGET: float = 0.01
-    DIVERSITY_REPLACE_FRAC: float = 0.01
-    DIVERSITY_SAMPLE_K: int = 100
-    DIVERSITY_ACCEPT_OVERLAP_MAX: float = 0.5
-    DIVERSITY_MAX_ATTEMPTS_PER_SLOT: int = 50
-
-    # Perturbation Parameters (for diversity injection)
-    PERTURB_LIGHT_SWAPS: int = 200  # n // this = number of swaps
-    PERTURB_MEDIUM_SWAPS: int = 100
-    PERTURB_HEAVY_SWAPS: int = 50
-    PERTURB_HEAVY_ITERATIONS: int = 2
-
     # Logging Parameters
     LOG_INTERVAL: int = 100
 
@@ -92,18 +78,6 @@ class GAParams:
 
 
 GA = GAParams()
-
-
-@dataclass(frozen=True)
-class GAFeatures:
-    """Feature flags for algorithm components."""
-
-    USE_DIVERSITY_INJECTION: bool = True
-    USE_MUTATION_PERTURB: bool = False  # For experimentation
-    USE_MUTATION_CLASSIC: bool = True  # Standard mutation operators
-
-
-FEATURES = GAFeatures()
 
 
 # ==============================================================
@@ -361,34 +335,6 @@ def edge_diversity(population: List[Individual]) -> float:
     return len(edges) / denom
 
 
-@numba.njit(cache=True)
-def directed_edge_overlap_count(succ_a: np.ndarray, succ_b: np.ndarray) -> int:
-    """Count shared directed edges between two tours."""
-    n = succ_a.shape[0]
-    count = 0
-    for i in range(n):
-        if succ_a[i] == succ_b[i]:
-            count += 1
-    return count
-
-
-@numba.njit(cache=True)
-def avg_overlap_ratio_with_sample(
-    child_succ: np.ndarray,
-    pop_succs: np.ndarray,
-    sample_idxs: np.ndarray,
-) -> float:
-    """Average overlap ratio between child and population sample."""
-    n = child_succ.shape[0]
-    total = 0.0
-
-    for k in range(sample_idxs.shape[0]):
-        idx = sample_idxs[k]
-        total += directed_edge_overlap_count(child_succ, pop_succs[idx]) / n
-
-    return total / sample_idxs.shape[0]
-
-
 # ==============================================================
 # POPULATION INITIALIZATION
 # ==============================================================
@@ -562,91 +508,6 @@ def mutation(individual: Individual) -> None:
 
 
 # ==============================================================
-# PERTURBATION OPERATORS (for diversity injection)
-# ==============================================================
-
-
-def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
-    """
-    Double-bridge move: cut tour into 4 segments and reconnect differently.
-    More disruptive than simple mutations.
-    """
-    n = len(tour)
-    if n < 8:
-        return tour.copy()
-
-    p1, p2, p3 = sorted(random.sample(range(1, n), 3))
-    A = tour[:p1]
-    B = tour[p1:p2]
-    C = tour[p2:p3]
-    D = tour[p3:]
-
-    patterns = [
-        np.concatenate([A, C, B, D]),
-        np.concatenate([A, D, C, B]),
-        np.concatenate([A, C, D, B]),
-        np.concatenate([A, B, D, C]),
-    ]
-    return random.choice(patterns)
-
-
-def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
-    """Apply k random city swaps."""
-    tour = tour.copy()
-    n = len(tour)
-    for _ in range(k):
-        i, j = random.sample(range(n), 2)
-        tour[i], tour[j] = tour[j], tour[i]
-    return tour
-
-
-def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
-    """Reverse a random contiguous segment."""
-    tour = tour.copy()
-    i, j = sorted(random.sample(range(len(tour)), 2))
-    tour[i : j + 1] = tour[i : j + 1][::-1]
-    return tour
-
-
-def apply_perturbation(tour: np.ndarray, strength: str) -> np.ndarray:
-    """
-    Apply perturbation of specified strength to diversify tour.
-
-    Args:
-        tour: Original tour
-        strength: 'light', 'medium', or 'heavy'
-    """
-    n = len(tour)
-
-    if strength == "light":
-        k = max(1, n // GA.PERTURB_LIGHT_SWAPS)
-        return perturb_multi_swap(tour, k)
-
-    if strength == "medium":
-        k = max(2, n // GA.PERTURB_MEDIUM_SWAPS)
-        return random.choice(
-            [
-                lambda t: perturb_double_bridge(t),
-                lambda t: perturb_multi_swap(t, k),
-                lambda t: perturb_segment_reverse(t),
-            ]
-        )(tour)
-
-    # Heavy: apply multiple operations
-    result = tour.copy()
-    k = max(3, n // GA.PERTURB_HEAVY_SWAPS)
-    for _ in range(GA.PERTURB_HEAVY_ITERATIONS):
-        result = random.choice(
-            [
-                perturb_double_bridge,
-                lambda x: perturb_multi_swap(x, k),
-                perturb_segment_reverse,
-            ]
-        )(result)
-    return result
-
-
-# ==============================================================
 # CROSSOVER OPERATORS
 # ==============================================================
 
@@ -679,118 +540,6 @@ def order_crossover(
             fill_index += 1
 
     return Individual(tour=child_tour, mutation_rate=parent_a.mutation_rate)
-
-
-def pmx_crossover(
-    problem: TravelingSalesmanProblem,
-    parent_a: Individual,
-    parent_b: Individual,
-) -> Individual:
-    """
-    Partially Mapped Crossover (PMX): position-based mapping.
-    More disruptive than OX, better for escaping local optima.
-    """
-    n = problem.num_cities
-    child_tour = np.copy(parent_a.tour)
-
-    start, end = sorted(random.sample(range(n), 2))
-
-    # Build mapping from segment
-    mapping = {}
-    for i in range(start, end + 1):
-        city_a = parent_a.tour[i]
-        city_b = parent_b.tour[i]
-        mapping[city_a] = city_b
-        child_tour[i] = city_b
-
-    # Fix conflicts outside segment
-    for i in list(range(0, start)) + list(range(end + 1, n)):
-        city = child_tour[i]
-
-        while city in mapping.values():
-            for key, val in mapping.items():
-                if val == city:
-                    city = key
-                    break
-
-        child_tour[i] = city
-
-    return Individual(tour=child_tour, mutation_rate=parent_a.mutation_rate)
-
-
-# ==============================================================
-# 2-OPT LOCAL SEARCH (kept for future use)
-# ==============================================================
-
-
-def two_opt_local_search(
-    individual: Individual,
-    problem: TravelingSalesmanProblem,
-    max_iters: int = 5,
-) -> Individual:
-    """
-    Apply 2-opt local search: remove two edges and reconnect.
-    Continues until no improving move found or max iterations reached.
-
-    Currently not integrated into main optimization loop.
-    """
-    tour = individual.tour
-    distance_matrix = problem.distance_matrix
-    feasible = problem.feasible
-
-    if individual.fitness is None:
-        individual.evaluate(problem)
-
-    iteration = 0
-
-    while iteration < max_iters:
-        iteration += 1
-
-        i, j = find_first_2opt_improvement(tour, distance_matrix, feasible)
-
-        if i == -1:
-            break  # Local optimum reached
-
-        tour[i : j + 1] = tour[i : j + 1][::-1]
-
-    individual.evaluate(problem)
-    return individual
-
-
-@numba.njit(cache=True)
-def find_first_2opt_improvement(
-    tour: np.ndarray,
-    distance_matrix: np.ndarray,
-    feasible: np.ndarray,
-) -> Tuple[int, int]:
-    """
-    Find first improving 2-opt move.
-    Returns (i, j) for improvement, or (-1, -1) if none found.
-    """
-    n = tour.shape[0]
-
-    for i in range(1, n - 1):
-        a = tour[i - 1]
-        b = tour[i]
-
-        for j in range(i + 1, n):
-            next_j = (j + 1) % n
-            c = tour[j]
-            d = tour[next_j]
-
-            if not feasible[a, c] or not feasible[b, d]:
-                continue
-
-            cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
-            cost_added = distance_matrix[a, c] + distance_matrix[b, d]
-
-            if np.isinf(cost_removed):
-                return i, j
-
-            if cost_added < cost_removed - 1e-9:
-                return i, j
-
-    return -1, -1
 
 
 # ==============================================================
@@ -845,74 +594,6 @@ def elimination_with_crowding(
 
 
 # ==============================================================
-# DIVERSITY INJECTION
-# ==============================================================
-
-
-def inject_diversity(
-    problem: TravelingSalesmanProblem,
-    population: List[Individual],
-) -> int:
-    """
-    Replace worst individuals with diverse solutions when diversity is low.
-    Uses heavy perturbation + overlap checking to ensure diversity.
-
-    Returns: number of replacements made.
-    """
-    if not population:
-        return 0
-
-    cur_diversity = edge_diversity(population)
-    if cur_diversity >= GA.DIVERSITY_TARGET:
-        return 0
-
-    population.sort(key=lambda ind: ind.fitness)
-    pop_size = len(population)
-    n = population[0].tour.shape[0]
-
-    # Build successor matrix for overlap checks
-    pop_succs = np.empty((pop_size, n), dtype=np.int32)
-    for i, ind in enumerate(population):
-        pop_succs[i, :] = build_successor(ind.tour)
-
-    # Target worst individuals for replacement
-    num_slots = max(1, int(pop_size * GA.DIVERSITY_REPLACE_FRAC))
-    victim_indices = list(range(pop_size - num_slots, pop_size))
-    replaced = 0
-
-    for victim_idx in victim_indices:
-        # Try to generate diverse valid tour
-        for _ in range(GA.DIVERSITY_MAX_ATTEMPTS_PER_SLOT):
-            # Use strong perturbation on good solution
-            parent = random.choice(population[: max(5, pop_size // 3)])
-            new_tour = apply_perturbation(parent.tour, "heavy")
-
-            # Evaluate candidate
-            cand = Individual(tour=new_tour, mutation_rate=parent.mutation_rate)
-            cand.evaluate(problem)
-
-            if not np.isfinite(cand.fitness):
-                continue
-
-            # Check diversity: low overlap with population sample
-            k = min(GA.DIVERSITY_SAMPLE_K, pop_size)
-            sample_idxs = np.array(random.sample(range(pop_size), k), dtype=np.int32)
-            cand_succ = build_successor(cand.tour)
-            avg_overlap = float(
-                avg_overlap_ratio_with_sample(cand_succ, pop_succs, sample_idxs)
-            )
-
-            if avg_overlap <= GA.DIVERSITY_ACCEPT_OVERLAP_MAX:
-                population[victim_idx] = cand
-                pop_succs[victim_idx, :] = cand_succ
-                replaced += 1
-                break
-
-    population.sort(key=lambda ind: ind.fitness)
-    return replaced
-
-
-# ==============================================================
 # MAIN SOLVER
 # ==============================================================
 
@@ -927,7 +608,6 @@ class r0123456:
         - Order crossover (OX)
         - Weighted mutation operators
         - Deterministic crowding survivor selection
-        - Diversity injection when population converges
     """
 
     def __init__(self):
@@ -949,14 +629,12 @@ class r0123456:
         # Track best solution
         best_overall = min(population, key=lambda x: x.fitness)
         best_overall_fitness = best_overall.fitness
-        last_improve_gen = 0
         stall_gens = 0
 
         # Evolution loop
         print_section("EVOLUTION")
         start_time = time.perf_counter()
         checkpoint = start_time
-        last_injected = 0
 
         for generation in range(1, GA.GENERATIONS + 1):
             # Generate offspring
@@ -966,15 +644,6 @@ class r0123456:
             population = elimination_with_crowding(
                 population, offspring, GA.POPULATION_SIZE
             )
-
-            # Inject diversity if converging
-            if (
-                FEATURES.USE_DIVERSITY_INJECTION
-                and generation % GA.DIVERSITY_CHECK_INTERVAL == 0
-            ):
-                last_injected = inject_diversity(problem, population)
-            else:
-                last_injected = 0
 
             # Track best solution
             gen_best = min(population, key=lambda x: x.fitness)
@@ -996,7 +665,6 @@ class r0123456:
                 logger.info(
                     f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
                     f"Best: {gen_best.fitness:12.2f} │ Div: {diversity:8.2%} │ "
-                    f"Inj: {last_injected:3d} │ "
                     f"Δt: {elapsed:7.2f}s │ NoImp: {stall_gens:4d}"
                 )
 
@@ -1048,13 +716,7 @@ class r0123456:
                     tour=np.copy(parent1.tour), mutation_rate=parent1.mutation_rate
                 )
 
-            # Mutation
-            if FEATURES.USE_MUTATION_PERTURB:
-                # Experimental: use perturbation as mutation
-                if random.random() < child.mutation_rate:
-                    child.tour = apply_perturbation(child.tour, "light")
-            elif FEATURES.USE_MUTATION_CLASSIC:
-                mutation(child)
+            mutation(child)
 
             # Evaluate
             child.evaluate(problem)
@@ -1078,27 +740,75 @@ class r0123456:
 
 
 # ==============================================================
-# UTILITY FUNCTIONS
+# 2-OPT LOCAL SEARCH (kept for future use)
 # ==============================================================
 
 
-def evaluate_tour_from_csv_string(
-    distance_csv_path: str,
-    tour_csv_string: str,
-) -> float:
-    """
-    Evaluate tour length from CSV string representation.
-    Example: "0,5,2,7,1,3,4,6"
-    """
-    distance_matrix = np.loadtxt(distance_csv_path, delimiter=",")
-    tour = np.fromstring(tour_csv_string, sep=",", dtype=int)
-    problem = TravelingSalesmanProblem(distance_matrix)
-    return evaluate_tour_numba(tour, problem.distance_matrix)
+# def two_opt_local_search(
+#     individual: Individual,
+#     problem: TravelingSalesmanProblem,
+#     max_iters: int = 5,
+# ) -> Individual:
+#     """
+#     Apply 2-opt local search: remove two edges and reconnect.
+#     Continues until no improving move found or max iterations reached.
+
+#     Currently not integrated into main optimization loop.
+#     """
+#     tour = individual.tour
+#     distance_matrix = problem.distance_matrix
+#     feasible = problem.feasible
+
+#     if individual.fitness is None:
+#         individual.evaluate(problem)
+
+#     iteration = 0
+
+#     while iteration < max_iters:
+#         iteration += 1
+
+#         i, j = find_first_2opt_improvement(tour, distance_matrix, feasible)
+
+#         if i == -1:
+#             break  # Local optimum reached
+
+#         tour[i : j + 1] = tour[i : j + 1][::-1]
+
+#     individual.evaluate(problem)
+#     return individual
 
 
-if __name__ == "__main__":
-    dist_csv = "src/benchmark/tour750.csv"
-    tour_csv = "92,446,37,254,396,229,323,472,296,362,480,649,586,90,426,720,143,67,674,514,265,691,234,193,646,504,245,463,579,351,214,604,132,46,484,661,680,40,736,518,675,225,43,567,454,131,177,590,304,62,172,176,605,298,117,50,212,714,505,194,699,507,73,55,443,520,220,34,31,113,237,57,119,636,491,373,692,133,153,739,89,20,91,727,24,553,407,663,191,599,3,623,530,218,164,738,215,497,703,83,717,558,243,244,232,408,106,552,197,64,32,203,283,189,27,702,21,523,316,495,345,412,537,474,12,540,460,68,201,724,689,693,103,647,568,75,458,301,705,314,654,365,291,151,15,77,332,591,743,668,701,181,733,485,109,248,584,148,145,667,595,233,696,343,105,451,528,239,594,746,144,626,300,198,449,625,442,141,587,7,134,394,9,585,716,184,427,421,327,742,487,348,452,51,563,608,157,683,430,659,434,517,321,310,317,609,108,288,428,66,159,534,289,231,393,258,457,488,747,251,359,531,559,278,741,629,719,439,49,69,635,502,554,640,149,331,58,36,477,459,82,190,468,435,200,270,284,271,209,45,180,380,735,631,299,473,573,501,260,54,600,175,121,128,61,236,606,387,549,39,41,481,207,498,557,135,222,614,146,102,130,644,170,1,542,409,202,110,6,728,564,311,492,361,281,476,676,124,493,276,383,581,519,732,87,71,539,432,238,541,178,16,571,65,455,388,688,282,308,302,211,536,76,114,274,402,360,379,598,42,628,358,619,545,2,417,166,96,438,706,565,127,666,651,292,85,23,471,242,722,319,633,744,35,47,224,371,526,167,489,38,208,346,610,147,216,726,320,335,700,386,704,592,374,513,324,697,368,257,617,397,363,494,686,677,18,414,561,400,154,580,328,17,441,401,369,384,86,470,285,466,548,188,333,186,652,120,411,112,521,690,235,344,376,749,169,707,370,624,653,615,506,576,419,510,632,246,694,59,382,195,249,79,662,729,570,252,30,630,129,596,543,656,511,469,219,535,404,496,179,698,60,329,48,483,679,657,582,734,424,440,464,713,84,395,643,4,685,538,204,410,74,399,650,524,533,500,28,627,721,660,221,486,5,588,453,711,347,355,745,115,601,616,93,572,682,253,22,338,378,94,279,259,315,574,391,342,611,621,444,171,695,708,294,475,160,352,290,456,357,478,168,142,174,162,658,318,593,330,490,509,390,99,227,275,583,44,155,671,437,566,267,673,665,366,429,562,78,230,158,715,392,138,196,577,681,687,433,367,269,748,569,206,26,508,415,532,205,479,403,389,642,312,262,163,462,306,405,418,192,337,710,98,560,313,637,56,136,118,293,295,527,709,353,217,655,684,126,272,546,95,123,280,372,0,544,634,622,63,712,731,223,450,104,261,551,669,529,25,381,467,336,645,213,522,613,137,307,247,597,122,325,445,639,406,210,718,125,638,737,165,515,139,375,150,161,241,341,555,81,648,297,8,385,482,33,11,730,664,339,356,603,461,413,70,255,266,575,286,448,334,422,183,512,423,52,612,303,268,322,287,350,111,100,273,420,602,13,101,152,182,187,672,326,589,226,72,107,305,88,97,185,53,354,556,264,173,525,29,516,607,425,670,465,240,618,256,398,723,19,263,277,740,377,364,620,578,228,80,349,199,550,499,340,309,431,156,250,10,547,447,416,14,725,678,116,436,503,140,641"
+# @numba.njit(cache=True)
+# def find_first_2opt_improvement(
+#     tour: np.ndarray,
+#     distance_matrix: np.ndarray,
+#     feasible: np.ndarray,
+# ) -> Tuple[int, int]:
+#     """
+#     Find first improving 2-opt move.
+#     Returns (i, j) for improvement, or (-1, -1) if none found.
+#     """
+#     n = tour.shape[0]
 
-    length = evaluate_tour_from_csv_string(dist_csv, tour_csv)
-    print(f"Tour length: {length:.2f}")
+#     for i in range(1, n - 1):
+#         a = tour[i - 1]
+#         b = tour[i]
+
+#         for j in range(i + 1, n):
+#             next_j = (j + 1) % n
+#             c = tour[j]
+#             d = tour[next_j]
+
+#             if not feasible[a, c] or not feasible[b, d]:
+#                 continue
+
+#             cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
+#             cost_added = distance_matrix[a, c] + distance_matrix[b, d]
+
+#             if np.isinf(cost_removed):
+#                 return i, j
+
+#             if cost_added < cost_removed - 1e-9:
+#                 return i, j
+
+#     return -1, -1
