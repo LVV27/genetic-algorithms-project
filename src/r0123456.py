@@ -67,39 +67,39 @@ class GAParams:
 
     # ===== Selection Parameters =====
     TOURNAMENT_K: int = (
-        7  # Tournament size for parent selection (larger = more selective)
+        5  # Tournament size for parent selection (larger = more selective)
     )
 
     # ===== Mutation Parameters =====
     # Self-adaptive mutation rate bounds
-    MUTATION_ALPHA_MIN: float = 0.04  # Minimum mutation rate (exploitation)
-    MUTATION_ALPHA_MAX: float = 0.12  # Maximum mutation rate (exploration)
+    MUTATION_ALPHA_MIN: float = 0.08  # Minimum mutation rate (exploitation)
+    MUTATION_ALPHA_MAX: float = 0.20  # Maximum mutation rate (exploration)
     DIVERSITY_CHECK_INTERVAL: int = (
         5  # How often to measure diversity for adaptive mutation
     )
 
     # ===== Crossover Parameters =====
     CROSSOVER_PROB: float = 0.8  # Probability of crossover vs. cloning
-    ERX_PROB_SPARSE: float = 0.15  # Probability of using ERX in sparse graphs
+    ERX_PROB_SPARSE: float = 0.4  # Probability of using ERX in sparse graphs
 
     # ===== Initialization Parameters =====
     GREEDY_SEED_COUNT: int = 5  # Number of best greedy solutions to seed population
     GREEDY_RESTARTS: int = (
-        100  # Number of different start cities for greedy construction
+        1000  # Number of different start cities for greedy construction
     )
 
     # ===== Local Search Parameters =====
-    LOCAL_SEARCH_ENABLED: bool = True
-    LOCAL_SEARCH_MAX_ITERS: int = 1  # Max iterations per 2-opt application
+    LOCAL_SEARCH_ENABLED: bool = False
+    LOCAL_SEARCH_MAX_ITERS: int = 2  # Max iterations per 2-opt application
 
     # When to apply 2-opt (selective to save computation)
-    LSO_APPLY_IF_BEATS_ANY_PARENT: bool = True  # Apply if offspring beats a parent
+    LSO_APPLY_IF_BEATS_ANY_PARENT: bool = False  # Apply if offspring beats a parent
     LSO_NEAR_BEST_FRAC: float = 0.01  # Apply if within 1% of best
-    LSO_ALWAYS_IMPROVE_TOP_K: int = 2  # Always apply to top K offspring
+    LSO_ALWAYS_IMPROVE_TOP_K: int = 3  # Always apply to top K offspring
     LSO_LOG_COUNTS: bool = False  # Log how many get local search
 
     # ===== Sparse Graph Strategy =====
-    SPARSITY_THRESHOLD: float = 0.1  # Fraction of inf edges to trigger sparse mode
+    SPARSITY_THRESHOLD: float = 1.1  # Fraction of inf edges to trigger sparse mode
     SPARSE_OFFSPRING_TARGET_MULTIPLIER: int = (
         3  # Target * this = max attempts in sparse graphs
     )
@@ -117,19 +117,31 @@ class GAParams:
     PERTURBATION_MAX_ATTEMPTS_MULTIPLIER: int = 50  # Max attempts = needed * this
 
     # ===== Large Neighborhood Search (LNS) Parameters =====
-    LNS_STALL_THRESHOLD: int = 80  # Apply LNS after this many stagnant generations
-    LNS_CHECK_INTERVAL: int = 20  # Check every N generations when stalled
-    LNS_NUM_RESTARTS: int = 20  # Number of LNS restart attempts
-    LNS_2OPT_ITERS: int = 30  # 2-opt iterations after LNS reconstruction
+    LNS_ENABLED: bool = False
+    LNS_STALL_THRESHOLD: int = 200  # Apply LNS after this many stagnant generations
+    LNS_CHECK_INTERVAL: int = 10  # Check every N generations when stalled
+    LNS_NUM_RESTARTS: int = 50  # Number of LNS restart attempts
+    LNS_2OPT_ITERS: int = 10  # 2-opt iterations after LNS reconstruction
     LNS_DESTROY_FRACTION: float = 0.4  # Fraction of tour to destroy/rebuild
     LNS_ACCEPTANCE_UPHILL_DELTA: int = (
-        100  # Accept uphill moves up to this delta when stalled
+        5000  # Accept uphill moves up to this delta when stalled
     )
     LNS_ACCEPTANCE_STALL_THRESHOLD: int = 200  # Only accept uphill if stalled this long
 
     # ===== Logging Parameters =====
     LOG_INTERVAL: int = 10  # Print statistics every N generations
     LOG_SPARSE_OFFSPRING_STATS_INTERVAL: int = 20  # Log offspring generation stats
+
+    # ===== Missing Edge Penalty =====
+    # Whether to replace missing (Inf) edges with a large penalty cost.
+    USE_PENALTY_FOR_INF: bool = True
+    # Penalty multiplier: penalty = (max_finite_edge + 1) * INF_PENALTY_FACTOR
+    INF_PENALTY_FACTOR: float = 100
+
+    # ===== Candidate List Strategy =====
+    # How many nearest neighbours of each city should keep their original cost.
+    # Set to 0 to disable; otherwise edges outside these k neighbours get penalised.
+    CANDIDATE_LIST_SIZE: int = 0
 
 
 GA = GAParams()
@@ -179,17 +191,58 @@ class TravelingSalesmanProblem:
         "tour1000.csv": 70468,
     }
 
-    def __init__(
-        self,
-        distance_matrix: np.ndarray,
-        filename: Optional[str] = None,
-    ):
+    def __init__(self, distance_matrix: np.ndarray, filename: Optional[str] = None):
         self.distance_matrix = distance_matrix
         self.num_cities = distance_matrix.shape[0]
         self.filename = filename
 
-        # Precompute feasibility matrix for faster sparse graph handling
+        # feasibility matrix for sparse-aware operators
         self.feasible = np.isfinite(distance_matrix)
+
+        # Start with a copy for penalised distances
+        self.penalized_matrix = distance_matrix.copy()
+        self.penalty_distance = None
+
+        # Only apply the scheme if enabled and the matrix has Inf entries
+        if GA.USE_PENALTY_FOR_INF and np.isinf(distance_matrix).any():
+            finite_mask = np.isfinite(distance_matrix)
+            max_finite = (
+                float(np.max(distance_matrix[finite_mask]))
+                if finite_mask.any()
+                else 1.0
+            )
+            self.penalty_distance = (max_finite + 1.0) * GA.INF_PENALTY_FACTOR
+
+            # Candidate list handling: keep k nearest neighbours at original cost
+            if GA.CANDIDATE_LIST_SIZE and GA.CANDIDATE_LIST_SIZE > 0:
+                n = self.num_cities
+                candidate_mask = np.zeros((n, n), dtype=bool)
+                for i in range(n):
+                    candidate_mask[i, i] = True
+                    row = distance_matrix[i]
+                    finite_indices = np.where(np.isfinite(row))[0]
+                    finite_indices = finite_indices[finite_indices != i]
+                    if GA.CANDIDATE_LIST_SIZE < len(finite_indices):
+                        partition_indices = np.argpartition(
+                            row[finite_indices], GA.CANDIDATE_LIST_SIZE
+                        )[: GA.CANDIDATE_LIST_SIZE]
+                        nearest = finite_indices[partition_indices]
+                    else:
+                        nearest = finite_indices
+                    candidate_mask[i, nearest] = True
+
+                penalised = distance_matrix.copy()
+                penalised[~candidate_mask] = self.penalty_distance
+                penalised[~np.isfinite(penalised)] = self.penalty_distance
+                self.penalized_matrix = penalised
+            else:
+                # No candidate list: penalise all missing edges
+                penalised = distance_matrix.copy()
+                penalised[~finite_mask] = self.penalty_distance
+                self.penalized_matrix = penalised
+        else:
+            # no missing edges or penalty disabled
+            self.penalized_matrix = distance_matrix
 
     def get_distance(self, city_a: int, city_b: int) -> float:
         """Return the distance between two cities."""
@@ -255,12 +308,10 @@ class Individual:
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
         """
-        Evaluate tour fitness using Numba-accelerated distance calculation.
-
-        Returns:
-            Total tour length, or np.inf if tour contains invalid edges
+        Evaluate tour fitness on the penalised distance matrix.
+        Tours with missing edges accrue a large penalty cost.
         """
-        self.fitness = evaluate_tour_numba(self.tour, problem.distance_matrix)
+        self.fitness = evaluate_tour_numba(self.tour, problem.penalized_matrix)
         return self.fitness
 
 
@@ -292,61 +343,114 @@ def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
 # ==============================================================
 
 
+@numba.njit(cache=True)
+def build_successor(tour: np.ndarray) -> np.ndarray:
+    """
+    Build successor representation: succ[city] = next_city in the tour.
+    Directed edges are (city -> succ[city]).
+    """
+    n = tour.shape[0]
+    succ = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        a = tour[i]
+        b = tour[(i + 1) % n]
+        succ[a] = b
+    return succ
+
+
+@numba.njit(cache=True)
+def best_rival_index_by_edge_overlap(
+    child_succ: np.ndarray,
+    pop_succs: np.ndarray,
+    child_fit: float,
+    pop_fits: np.ndarray,
+) -> int:
+    """
+    Return index of rival in population with maximum directed edge overlap.
+    Tie-breaker: closest fitness.
+    """
+    pop_size = pop_succs.shape[0]
+    n = child_succ.shape[0]
+
+    best_idx = 0
+    best_overlap = -1
+    best_fit_diff = 1e300
+
+    for i in range(pop_size):
+        overlap = 0
+        for city in range(n):
+            if child_succ[city] == pop_succs[i, city]:
+                overlap += 1
+
+        fit_diff = abs(child_fit - pop_fits[i])
+
+        if (overlap > best_overlap) or (
+            overlap == best_overlap and fit_diff < best_fit_diff
+        ):
+            best_overlap = overlap
+            best_fit_diff = fit_diff
+            best_idx = i
+
+    return best_idx
+
+
+Edge = Tuple[int, int]
+
+
+def directed_edge_set(tour: np.ndarray) -> Set[Edge]:
+    """Directed edges (a->b) along the cyclic tour."""
+    n = tour.shape[0]
+    return {(int(tour[i]), int(tour[(i + 1) % n])) for i in range(n)}
+
+
 def edge_diversity(population: List[Individual]) -> float:
-    """
-    Measure edge-level diversity across the population.
-
-    Counts unique edges used across all tours (treating edges as undirected).
-    Higher values indicate more diverse routing patterns.
-
-    Returns:
-        Fraction of possible edge occurrences that are unique
-    """
     if not population:
         return 0.0
-
-    edge_sets = []
     n = len(population[0].tour)
-
+    edges = set()
     for ind in population:
-        tour = ind.tour
-        edges = set()
+        t = ind.tour
         for i in range(n):
-            a = tour[i]
-            b = tour[(i + 1) % n]
-            # Store both directions (undirected edge)
-            edges.add((a, b))
-            edges.add((b, a))
-        edge_sets.append(edges)
-
-    # Union of all edges used
-    union_edges = set.union(*edge_sets)
-
-    # Maximum possible: each individual uses n edges * 2 directions
-    max_edges = len(population) * n * 2
-
-    return len(union_edges) / max_edges
+            edges.add((int(t[i]), int(t[(i + 1) % n])))
+    denom = min(len(population) * n, n * (n - 1))
+    return len(edges) / denom
 
 
-def find_most_similar(
-    individual: Individual,
+def find_most_similar_by_edge_overlap(
+    child: Individual,
     population: List[Individual],
 ) -> Optional[Individual]:
     """
-    Find the individual in the population with closest fitness value.
-
-    This is a computationally cheap proxy for tour similarity,
-    used in deterministic crowding for diversity preservation.
+    Find the individual in the population that shares the most directed edges
+    with the child (deterministic crowding niche matching).
     """
     if not population:
         return None
 
-    fitness_differences = [
-        abs(individual.fitness - other.fitness) for other in population
-    ]
+    child_edges = directed_edge_set(child.tour)
 
-    most_similar_index = int(np.argmin(fitness_differences))
-    return population[most_similar_index]
+    best_rival = None
+    best_overlap = -1
+    best_fit_diff = float("inf")  # tie-breaker
+
+    # If child's fitness is None (shouldn't happen), treat as 0 for tie-breaking
+    child_fit = child.fitness if child.fitness is not None else 0.0
+
+    for rival in population:
+        rival_edges = directed_edge_set(rival.tour)
+        overlap = len(child_edges & rival_edges)
+
+        rival_fit = rival.fitness if rival.fitness is not None else 0.0
+        fit_diff = abs(child_fit - rival_fit)
+
+        if overlap > best_overlap or (
+            overlap == best_overlap and fit_diff < best_fit_diff
+        ):
+            best_overlap = overlap
+            best_fit_diff = fit_diff
+            best_rival = rival
+
+    return best_rival
 
 
 # ==============================================================
@@ -355,18 +459,24 @@ def find_most_similar(
 
 
 def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
-    """
-    Apply double-bridge perturbation (effective for escaping local optima).
-
-    Splits tour into 4 segments and reconnects them in a different order.
-    """
     n = len(tour)
     if n < 8:
         return tour.copy()
 
-    # Choose 3 cut points to create 4 segments
     p1, p2, p3 = sorted(random.sample(range(1, n), 3))
-    return np.concatenate([tour[:p1], tour[p2:p3], tour[p1:p2], tour[p3:]])
+    A = tour[:p1]
+    B = tour[p1:p2]
+    C = tour[p2:p3]
+    D = tour[p3:]
+
+    # Randomly choose a reconnection pattern
+    patterns = [
+        np.concatenate([A, C, B, D]),
+        np.concatenate([A, D, C, B]),
+        np.concatenate([A, C, D, B]),
+        np.concatenate([A, B, D, C]),
+    ]
+    return random.choice(patterns)
 
 
 def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
@@ -529,6 +639,52 @@ def fill_with_perturbations(
     return added
 
 
+@numba.njit(cache=True)
+def nearest_neighbor_greedy_numba(
+    distance_matrix: np.ndarray,
+    start_city: int,
+) -> np.ndarray:
+    """
+    Numba-accelerated nearest neighbor construction.
+
+    Returns:
+        Tour as array, or array filled with -1 if construction fails
+    """
+    num_cities = distance_matrix.shape[0]
+    tour = np.empty(num_cities, dtype=np.int32)
+    tour[0] = start_city
+
+    visited = np.zeros(num_cities, dtype=np.bool_)
+    visited[start_city] = True
+
+    current_city = start_city
+
+    for step in range(1, num_cities):
+        best_distance = np.inf
+        best_next_city = -1
+
+        # Vectorized search for nearest unvisited city
+        for candidate in range(num_cities):
+            if visited[candidate]:
+                continue
+
+            distance = distance_matrix[current_city, candidate]
+            if distance < best_distance:
+                best_distance = distance
+                best_next_city = candidate
+
+        # Construction failed
+        if best_next_city == -1 or np.isinf(best_distance):
+            tour[:] = -1
+            return tour
+
+        tour[step] = best_next_city
+        visited[best_next_city] = True
+        current_city = best_next_city
+
+    return tour
+
+
 def nearest_neighbor_greedy(
     problem: TravelingSalesmanProblem,
     start_city: int = 0,
@@ -541,33 +697,13 @@ def nearest_neighbor_greedy(
     Returns:
         Complete tour, or None if construction fails (sparse graph)
     """
-    num_cities = problem.num_cities
-    unvisited = set(range(num_cities))
-    unvisited.remove(start_city)
+    tour = nearest_neighbor_greedy_numba(problem.distance_matrix, start_city)
 
-    tour: List[int] = [start_city]
-    current_city = start_city
+    # Check if construction failed
+    if tour[0] == -1:
+        return None
 
-    while unvisited:
-        best_next_city: Optional[int] = None
-        best_distance = float("inf")
-
-        # Find nearest unvisited city
-        for candidate in unvisited:
-            distance = problem.get_distance(current_city, candidate)
-            if distance < best_distance:
-                best_distance = distance
-                best_next_city = candidate
-
-        # If no valid edge exists, construction fails
-        if best_next_city is None or np.isinf(best_distance):
-            return None
-
-        tour.append(best_next_city)
-        unvisited.remove(best_next_city)
-        current_city = best_next_city
-
-    return np.asarray(tour, dtype=int)
+    return tour
 
 
 def generate_greedy_candidates(
@@ -731,6 +867,17 @@ def tournament_selection(
 # ==============================================================
 
 
+def mutation_perturb(individual: Individual) -> None:
+    if random.random() >= individual.mutation_rate:
+        return
+    strength = random.choices(
+        ["light", "medium", "heavy"],
+        weights=[0.70, 0.25, 0.05],  # tune
+        k=1,
+    )[0]
+    individual.tour = apply_perturbation(individual.tour, strength)
+
+
 def mutation_swap(tour: np.ndarray) -> None:
     """Swap two random cities in-place."""
     i, j = random.sample(range(len(tour)), 2)
@@ -857,6 +1004,29 @@ def adaptive_mutation_rate(
     individual.mutation_rate = float(np.clip(new_rate, min_rate, max_rate))
 
 
+def adaptive_mutation_stagnation(
+    population: List[Individual],
+    stall_gens: int,
+) -> None:
+    """
+    Increase mutation rates when stagnating to force exploration.
+    """
+    if stall_gens < 50:
+        return  # Not stalled yet
+
+    # Calculate mutation boost based on stall duration
+    if stall_gens < 200:
+        boost = 1.2
+    elif stall_gens < 500:
+        boost = 1.5
+    else:
+        boost = 2.0
+
+    for ind in population:
+        new_rate = min(GA.MUTATION_ALPHA_MAX, ind.mutation_rate * boost)
+        ind.mutation_rate = new_rate
+
+
 # ==============================================================
 # CROSSOVER OPERATORS
 # ==============================================================
@@ -898,6 +1068,47 @@ def order_crossover(
         tour=child_tour,
         mutation_rate=parent_a.mutation_rate,
     )
+
+
+def pmx_crossover(
+    problem: TravelingSalesmanProblem,
+    parent_a: Individual,
+    parent_b: Individual,
+) -> Individual:
+    """
+    Partially Mapped Crossover (PMX) - better for escaping local optima.
+
+    Creates more diverse offspring than OX by using position-based mapping.
+    """
+    n = problem.num_cities
+    child_tour = np.copy(parent_a.tour)
+
+    # Select random crossover segment
+    start, end = sorted(random.sample(range(n), 2))
+
+    # Build mapping from segment
+    mapping = {}
+    for i in range(start, end + 1):
+        city_a = parent_a.tour[i]
+        city_b = parent_b.tour[i]
+        mapping[city_a] = city_b
+        child_tour[i] = city_b
+
+    # Fix conflicts outside the segment
+    for i in list(range(0, start)) + list(range(end + 1, n)):
+        city = child_tour[i]
+
+        # If this city was swapped into the segment, follow mapping chain
+        while city in mapping.values():
+            # Find which key maps to this city
+            for key, val in mapping.items():
+                if val == city:
+                    city = key
+                    break
+
+        child_tour[i] = city
+
+    return Individual(tour=child_tour, mutation_rate=parent_a.mutation_rate)
 
 
 # ==============================================================
@@ -1001,7 +1212,7 @@ def edge_recombination_crossover_sparse_aware(
     n = problem.num_cities
 
     # Try multiple start cities
-    max_restarts = 5
+    max_restarts = 2
     starts: List[int] = []
     if start_city is not None:
         starts.append(int(start_city))
@@ -1309,31 +1520,49 @@ def elimination_with_crowding(
     population_size: int,
 ) -> List[Individual]:
     """
-    Deterministic crowding survivor selection.
+    Deterministic crowding using directed edge overlap (Numba-accelerated).
 
-    Each offspring competes with its most similar individual in the
-    current population (similarity measured by fitness distance).
-    The better one survives.
-
-    This promotes diversity while maintaining quality.
+    Rival chosen = survivor with max overlap in successor representation.
+    Child replaces rival if child is fitter.
     """
     if not offspring:
+        population.sort(key=lambda ind: ind.fitness)
         return population[:population_size]
 
+    # Start with survivors list
     survivors = list(population)
 
+    # Ensure we have exactly population_size survivors to compare against
+    survivors.sort(key=lambda ind: ind.fitness)
+    survivors = survivors[:population_size]
+
+    # Build successor matrix + fitness array for survivors
+    # pop_succs[i, city] = next city after 'city' in survivor i
+    pop_succs = np.empty((len(survivors), survivors[0].tour.shape[0]), dtype=np.int32)
+    pop_fits = np.empty(len(survivors), dtype=np.float64)
+
+    for i, ind in enumerate(survivors):
+        pop_succs[i, :] = build_successor(ind.tour)
+        pop_fits[i] = float(ind.fitness)
+
+    # Process offspring
     for child in offspring:
-        if len(survivors) < population_size:
-            survivors.append(child)
+        if child.fitness is None:
+            # should not happen, but be safe
             continue
 
-        # Find most similar individual
-        rival = find_most_similar(child, survivors)
+        child_succ = build_successor(child.tour)
+        child_fit = float(child.fitness)
 
-        # Child replaces rival if better
-        if rival is not None and child.fitness < rival.fitness:
-            survivors.remove(rival)
-            survivors.append(child)
+        rival_idx = best_rival_index_by_edge_overlap(
+            child_succ, pop_succs, child_fit, pop_fits
+        )
+
+        if child_fit < pop_fits[rival_idx]:
+            # Replace rival in-place (no list remove, keeps arrays aligned)
+            survivors[rival_idx] = child
+            pop_succs[rival_idx, :] = child_succ
+            pop_fits[rival_idx] = child_fit
 
     survivors.sort(key=lambda ind: ind.fitness)
     return survivors[:population_size]
@@ -1426,9 +1655,19 @@ class r0123456:
             )
 
             # Survivor selection
-            population = (
-                elimination_with_crowding(population, offspring, GA.POPULATION_SIZE)
+            population = elimination_with_crowding(
+                population, offspring, GA.POPULATION_SIZE
             )
+
+            # 🔥 Diversity injection (crank it up if collapsing)
+            if generation % GA.DIVERSITY_CHECK_INTERVAL == 0:
+                injected = crank_diversity_injection(
+                    problem,
+                    population,
+                    target_diversity=0.010,  # tune
+                    replace_frac=0.20,
+                    accept_avg_overlap_max=0.35,
+                )
 
             # Track best solution
             gen_best = min(population, key=lambda x: x.fitness)
@@ -1442,6 +1681,10 @@ class r0123456:
                 stall_gens = 0
             else:
                 stall_gens += 1
+
+                # Boost mutation when stalled
+                if stall_gens % 50 == 0:  # Every 50 stall generations
+                    adaptive_mutation_stagnation(population, stall_gens)
 
             # Periodic logging
             if generation % GA.LOG_INTERVAL == 0:
@@ -1457,7 +1700,8 @@ class r0123456:
 
             # Apply LNS when stalled
             if (
-                stall_gens > GA.LNS_STALL_THRESHOLD
+                GA.LNS_ENABLED
+                and stall_gens > GA.LNS_STALL_THRESHOLD
                 and generation % GA.LNS_CHECK_INTERVAL == 0
             ):
                 improved = self._apply_large_neighborhood_search(
@@ -1540,12 +1784,7 @@ class r0123456:
             parent2 = tournament_selection(population, GA.TOURNAMENT_K)
 
             # Create child based on graph type
-            if self.is_sparse:
-                child = self._create_offspring_sparse(problem, parent1, parent2)
-            else:
-                child = self._create_offspring_dense(
-                    problem, parent1, parent2, diversity
-                )
+            child = self._create_offspring_dense(problem, parent1, parent2, diversity)
 
             # Store parent fitness for local search decisions
             child._p1_fitness = parent1.fitness
@@ -1615,6 +1854,7 @@ class r0123456:
         # Apply crossover or clone
         if random.random() < GA.CROSSOVER_PROB:
             child = order_crossover(problem, parent1, parent2)
+            # or pmx, generation take way longer!! research others
         else:
             child = Individual(
                 tour=np.copy(parent1.tour), mutation_rate=parent1.mutation_rate
@@ -1625,7 +1865,7 @@ class r0123456:
             adaptive_mutation_rate(child, diversity)
 
         # Apply standard mutation
-        mutation(child)
+        mutation_perturb(child)
         child.evaluate(problem)
 
         return child
@@ -1736,6 +1976,114 @@ class r0123456:
                 "Worst": float(np.max(fits)),
             }
         )
+
+
+def crank_diversity_injection(
+    problem: TravelingSalesmanProblem,
+    population: List[Individual],
+    target_diversity: float = 0.015,  # tune: your edge_diversity is tiny for big n
+    replace_frac: float = 0.20,  # replace worst 20% (attempted)
+    sample_k: int = 12,  # overlap check sample size
+    accept_avg_overlap_max: float = 0.35,  # accept if child shares <=35% edges on avg
+    max_attempts_per_slot: int = 50,  # tries to find a diverse valid tour
+) -> int:
+    """
+    If population diversity is low, replace some WORST individuals with
+    injected tours that have low directed-edge overlap with population.
+
+    Returns: number of replacements actually made.
+    """
+    if not population:
+        return 0
+
+    cur_div = edge_diversity(population)
+    if cur_div >= target_diversity:
+        return 0
+
+    # Sort best->worst (we replace from the end)
+    population.sort(key=lambda ind: ind.fitness)
+
+    pop_size = len(population)
+    n = population[0].tour.shape[0]
+
+    # Build successor matrix for fast overlap checks
+    pop_succs = np.empty((pop_size, n), dtype=np.int32)
+    for i, ind in enumerate(population):
+        pop_succs[i, :] = build_successor(ind.tour)
+
+    # Decide how many to try to replace (from worst upwards)
+    num_slots = max(1, int(pop_size * replace_frac))
+    replaced = 0
+
+    # Indices we will consider "victims": worst individuals
+    victim_indices = list(range(pop_size - num_slots, pop_size))
+
+    for victim_idx in victim_indices:
+        # Try multiple attempts to generate a diverse *valid* tour
+        for _ in range(max_attempts_per_slot):
+            # Prefer injecting from GOOD solutions but with STRONG perturbation
+            parent = random.choice(population[: max(5, pop_size // 3)])  # top third
+            new_tour = apply_perturbation(parent.tour, "heavy")
+
+            # Repair if needed (sparse)
+            if np.isinf(evaluate_tour_numba(new_tour, problem.penalized_matrix)):
+                repaired = repair_tour(problem, new_tour)
+                if repaired is None:
+                    continue
+                new_tour = repaired
+
+            # Evaluate candidate
+            cand = Individual(tour=new_tour, mutation_rate=parent.mutation_rate)
+            cand.evaluate(problem)
+            if not np.isfinite(cand.fitness):
+                continue
+
+            # Overlap check against a random sample of population
+            k = min(sample_k, pop_size)
+            sample_idxs = np.array(random.sample(range(pop_size), k), dtype=np.int32)
+            cand_succ = build_successor(cand.tour)
+            avg_ov = float(
+                avg_overlap_ratio_with_sample(cand_succ, pop_succs, sample_idxs)
+            )
+
+            if avg_ov <= accept_avg_overlap_max:
+                # Accept: replace the victim
+                population[victim_idx] = cand
+                pop_succs[victim_idx, :] = cand_succ
+                replaced += 1
+                break
+
+    # Keep population sorted for downstream selection logic
+    population.sort(key=lambda ind: ind.fitness)
+    return replaced
+
+
+@numba.njit(cache=True)
+def directed_edge_overlap_count(succ_a: np.ndarray, succ_b: np.ndarray) -> int:
+    """Count shared directed edges between two tours in successor form."""
+    n = succ_a.shape[0]
+    c = 0
+    for i in range(n):
+        if succ_a[i] == succ_b[i]:
+            c += 1
+    return c
+
+
+@numba.njit(cache=True)
+def avg_overlap_ratio_with_sample(
+    child_succ: np.ndarray,
+    pop_succs: np.ndarray,
+    sample_idxs: np.ndarray,
+) -> float:
+    """
+    Average overlap ratio (0..1) between child and a sample of population.
+    """
+    n = child_succ.shape[0]
+    s = 0.0
+    for k in range(sample_idxs.shape[0]):
+        idx = sample_idxs[k]
+        s += directed_edge_overlap_count(child_succ, pop_succs[idx]) / n
+    return s / sample_idxs.shape[0]
 
 
 # ==============================================================
