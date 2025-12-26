@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-import copy
 import numpy as np
 import numba
 
@@ -471,231 +470,9 @@ def find_most_similar_by_edge_overlap(
 # ==============================================================
 
 
-def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
-    n = len(tour)
-    if n < 8:
-        return tour.copy()
-
-    p1, p2, p3 = sorted(random.sample(range(1, n), 3))
-    A = tour[:p1]
-    B = tour[p1:p2]
-    C = tour[p2:p3]
-    D = tour[p3:]
-
-    # Randomly choose a reconnection pattern
-    patterns = [
-        np.concatenate([A, C, B, D]),
-        np.concatenate([A, D, C, B]),
-        np.concatenate([A, C, D, B]),
-        np.concatenate([A, B, D, C]),
-    ]
-    return random.choice(patterns)
-
-
-def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
-    """Apply k random city swaps to the tour."""
-    tour = tour.copy()
-    n = len(tour)
-    for _ in range(k):
-        i, j = random.sample(range(n), 2)
-        tour[i], tour[j] = tour[j], tour[i]
-    return tour
-
-
-def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
-    """Reverse a random contiguous segment of the tour."""
-    tour = tour.copy()
-    i, j = sorted(random.sample(range(len(tour)), 2))
-    tour[i : j + 1] = tour[i : j + 1][::-1]
-    return tour
-
-
-def apply_perturbation(tour: np.ndarray, strength: str) -> np.ndarray:
-    """
-    Apply perturbation of specified strength to diversify the tour.
-
-    Args:
-        tour: Original tour
-        strength: 'light', 'medium', or 'heavy'
-
-    Returns:
-        Perturbed tour
-    """
-    n = len(tour)
-
-    if strength == "light":
-        k = max(1, n // GA.PERTURB_LIGHT_SWAPS)
-        return perturb_multi_swap(tour, k)
-
-    if strength == "medium":
-        k = max(2, n // GA.PERTURB_MEDIUM_SWAPS)
-        return random.choice(
-            [
-                lambda t: perturb_double_bridge(t),
-                lambda t: perturb_multi_swap(t, k),
-                lambda t: perturb_segment_reverse(t),
-            ]
-        )(tour)
-
-    # Heavy perturbation: apply multiple operations
-    result = tour.copy()
-    k = max(3, n // GA.PERTURB_HEAVY_SWAPS)
-    for _ in range(GA.PERTURB_HEAVY_ITERATIONS):
-        result = random.choice(
-            [
-                perturb_double_bridge,
-                lambda x: perturb_multi_swap(x, k),
-                perturb_segment_reverse,
-            ]
-        )(result)
-    return result
-
-
-def repair_tour(
-    problem: TravelingSalesmanProblem,
-    tour: np.ndarray,
-) -> Optional[np.ndarray]:
-    """
-    Attempt to repair a tour containing invalid (infinite) edges.
-
-    Strategy: For each invalid edge, try swapping with later cities
-    until a valid configuration is found.
-
-    Returns:
-        Repaired tour if successful, None if repair fails
-    """
-    tour = tour.copy()
-    n = len(tour)
-
-    for _ in range(GA.MAX_REPAIR_ATTEMPTS):
-        repaired_any = False
-
-        for i in range(n):
-            a = tour[i]
-            b = tour[(i + 1) % n]
-
-            # Check if current edge is invalid
-            if not np.isfinite(problem.get_distance(a, b)):
-                # Try swapping b with a later city c
-                for j in range(i + 2, n):
-                    c = tour[j]
-
-                    # Check if new edges would be valid
-                    if np.isfinite(problem.get_distance(a, c)) and np.isfinite(
-                        problem.get_distance(c, b)
-                    ):
-                        tour[(i + 1) % n], tour[j] = tour[j], tour[(i + 1) % n]
-                        repaired_any = True
-                        break
-
-                if not repaired_any:
-                    return None  # Unrecoverable edge
-
-        if not repaired_any:
-            return tour  # Fully repaired
-
-    return None  # Max attempts exceeded
-
-
-def fill_with_perturbations(
-    problem: TravelingSalesmanProblem,
-    base_population: List[Individual],
-    target_size: int,
-) -> int:
-    """
-    Fill population by creating perturbed copies of existing good solutions.
-
-    Uses top 50% of population as templates and applies various perturbations.
-    Ensures all generated individuals are valid (finite fitness).
-
-    Returns:
-        Number of individuals added
-    """
-    added = 0
-    attempts = 0
-    needed = target_size - len(base_population)
-    max_attempts = needed * GA.PERTURBATION_MAX_ATTEMPTS_MULTIPLIER
-
-    # Use top half as templates
-    templates = sorted(base_population, key=lambda ind: ind.fitness)
-    templates = templates[: max(1, len(templates) // 2)]
-
-    while len(base_population) < target_size and attempts < max_attempts:
-        attempts += 1
-        parent = random.choice(templates)
-
-        # Choose perturbation strength with decreasing probability
-        strength = random.choices(
-            ["light", "medium", "heavy"],
-            weights=[0.4, 0.4, 0.2],
-            k=1,
-        )[0]
-
-        # is this not just overriding the params
-
-        tour = apply_perturbation(parent.tour, strength)
-        ind = Individual(tour=tour, mutation_rate=parent.mutation_rate)
-        ind.evaluate(problem)
-
-        # Attempt repair if invalid
-        if not np.isfinite(ind.fitness):
-            repaired = repair_tour(problem, tour)
-            if repaired is None:
-                continue
-            ind = Individual(tour=repaired, mutation_rate=parent.mutation_rate)
-            ind.evaluate(problem)
-
-        if np.isfinite(ind.fitness):
-            base_population.append(ind)
-            added += 1
-
-    return added
-
-
-@numba.njit(cache=True)
-def nearest_neighbor_greedy_numba(
-    distance_matrix: np.ndarray,
-    start_city: int,
-) -> np.ndarray:
-    """
-    Numba-accelerated nearest neighbor construction.
-
-    Returns:
-        Tour as array, or array filled with -1 if construction fails
-    """
-    num_cities = distance_matrix.shape[0]
-    tour = np.empty(num_cities, dtype=np.int32)
-    tour[0] = start_city
-
-    visited = np.zeros(num_cities, dtype=np.bool_)
-    visited[start_city] = True
-
-    current_city = start_city
-
-    for step in range(1, num_cities):
-        best_distance = np.inf
-        best_next_city = -1
-
-        # Vectorized search for nearest unvisited city
-        for candidate in range(num_cities):
-            if visited[candidate]:
-                continue
-
-            distance = distance_matrix[current_city, candidate]
-            if distance < best_distance:
-                best_distance = distance
-                best_next_city = candidate
-
-        # Construction failed
-        if best_next_city == -1 or np.isinf(best_distance):
-            tour[:] = -1
-            return tour
-
-        tour[step] = best_next_city
-        visited[best_next_city] = True
-        current_city = best_next_city
-
-    return tour
+# ==============================================================
+# POPULATION INITIALIZATION
+# ==============================================================
 
 
 def nearest_neighbor_greedy(
@@ -710,148 +487,96 @@ def nearest_neighbor_greedy(
     Returns:
         Complete tour, or None if construction fails (sparse graph)
     """
-    tour = nearest_neighbor_greedy_numba(problem.distance_matrix, start_city)
+    num_cities = problem.num_cities
+    tour = [start_city]
+    visited = {start_city}
+    current_city = start_city
 
-    # Check if construction failed
-    if tour[0] == -1:
-        return None
+    for _ in range(num_cities - 1):
+        best_distance = float('inf')
+        best_next_city = None
 
-    return tour
+        # Find nearest unvisited city
+        for candidate in range(num_cities):
+            if candidate in visited:
+                continue
 
+            distance = problem.distance_matrix[current_city, candidate]
+            if distance < best_distance:
+                best_distance = distance
+                best_next_city = candidate
 
-def generate_greedy_candidates(
-    problem: TravelingSalesmanProblem,
-    restart_budget: int,
-) -> List[Individual]:
-    """
-    Generate multiple greedy tours from different starting cities.
+        # Construction failed - no valid next city
+        if best_next_city is None or np.isinf(best_distance):
+            return None
 
-    Only valid (finite fitness) tours are returned.
-    """
-    n = problem.num_cities
-    starts = random.sample(range(n), k=min(n, restart_budget))
+        tour.append(best_next_city)
+        visited.add(best_next_city)
+        current_city = best_next_city
 
-    candidates: List[Individual] = []
-
-    for start in starts:
-        tour = nearest_neighbor_greedy(problem, start)
-        if tour is None:
-            continue
-
-        ind = Individual(tour=tour)
-        ind.evaluate(problem)
-
-        if np.isfinite(ind.fitness):
-            candidates.append(ind)
-
-    return candidates
+    return np.array(tour, dtype=int)
 
 
-def select_best_unique_seeds(
-    candidates: List[Individual],
-    seed_target: int,
-) -> Tuple[List[Individual], Set]:
-    """
-    Select the best unique tours (no duplicates).
-
-    Returns:
-        Tuple of (selected individuals, set of tour keys for deduplication)
-    """
-    seeds: List[Individual] = []
-    seen_keys: Set = set()
-
-    for ind in sorted(candidates, key=lambda x: x.fitness):
-        key = tuple(ind.tour.tolist())
-
-        if key in seen_keys:
-            continue
-
-        seen_keys.add(key)
-        seeds.append(ind)
-
-        if len(seeds) >= seed_target:
-            break
-
-    return seeds, seen_keys
-
-
-def clone_to_size(
-    population: List[Individual],
-    target_size: int,
-) -> int:
-    """
-    Clone existing individuals (with deep copy) until target size is reached.
-
-    Used as last resort when other initialization methods don't produce enough individuals.
-
-    Returns:
-        Number of clones added
-    """
-    if not population:
-        return 0
-
-    added = 0
-    base = len(population)
-    i = 0
-
-    while len(population) < target_size:
-        population.append(copy.deepcopy(population[i % base]))
-        i += 1
-        added += 1
-
-    return added
-
-
-def initialize_population_greedy_sparse_aware(
+def initialize_population_mixed(
     problem: TravelingSalesmanProblem,
     population_size: int,
+    greedy_fraction: float = 0.20,
 ) -> List[Individual]:
     """
-    Initialize population using a multi-stage strategy:
-
-    1. Generate many greedy nearest-neighbor tours from different start cities
-    2. Select the best unique tours as seeds
-    3. Create diversity by perturbing these seeds
-    4. Clone only if necessary to reach target size
-
-    This approach works well for both dense and sparse graphs.
+    Initialize population with a mix of greedy and random solutions.
+    
+    Strategy:
+        - 20% (default) greedy nearest-neighbor tours from different start cities
+        - 80% random permutations
+    
+    This is much faster than generating thousands of greedy candidates.
     """
-    # Stage 1: Generate greedy seeds
-    greedy_candidates = generate_greedy_candidates(
-        problem,
-        restart_budget=max(GA.GREEDY_RESTARTS, population_size * 20),
-    )
-
-    population, _ = select_best_unique_seeds(
-        greedy_candidates,
-        GA.GREEDY_SEED_COUNT,
-    )
-
-    greedy_count = len(population)
-
-    if greedy_count == 0:
-        raise RuntimeError("No valid greedy tours found - graph may be disconnected")
-
-    # Stage 2: Fill with perturbations
-    perturb_count = fill_with_perturbations(
-        problem,
-        population,
-        population_size,
-    )
-
-    # Stage 3: Clone only if absolutely necessary
-    clone_count = 0
-    if len(population) < population_size:
-        clone_count = clone_to_size(population, population_size)
-
-    # Log initialization summary
+    population: List[Individual] = []
+    
+    # Calculate how many greedy vs random
+    num_greedy_target = int(population_size * greedy_fraction)
+    num_random_target = population_size - num_greedy_target
+    
+    # Generate greedy solutions (try 2x the target to account for failures)
+    logger.info(f"Generating {num_greedy_target} greedy solutions...")
+    greedy_count = 0
+    max_greedy_attempts = num_greedy_target * 3
+    
+    start_cities = random.sample(range(problem.num_cities), 
+                                 min(problem.num_cities, max_greedy_attempts))
+    
+    for start_city in start_cities:
+        if greedy_count >= num_greedy_target:
+            break
+            
+        tour = nearest_neighbor_greedy(problem, start_city)
+        if tour is None:
+            continue
+        
+        ind = Individual(tour=tour)
+        ind.evaluate(problem)
+        
+        if np.isfinite(ind.fitness):
+            population.append(ind)
+            greedy_count += 1
+    
+    # Fill the rest with random solutions
+    logger.info(f"Generating {num_random_target} random solutions...")
+    random_count = 0
+    
+    while len(population) < population_size:
+        ind = Individual(problem=problem)
+        ind.evaluate(problem)
+        
+        if np.isfinite(ind.fitness):
+            population.append(ind)
+            random_count += 1
+    
     logger.info(
         f"Initialized {len(population)} individuals "
-        f"({greedy_count} greedy, "
-        f"{perturb_count} perturbations, "
-        f"{clone_count} clones)"
+        f"({greedy_count} greedy, {random_count} random)"
     )
-
+    
     return population
 
 
@@ -859,6 +584,7 @@ def initialize_population_random(
     problem: TravelingSalesmanProblem,
     population_size: int,
 ) -> List[Individual]:
+    """Initialize population with purely random solutions."""
     population: List[Individual] = []
 
     while len(population) < population_size:
@@ -870,7 +596,6 @@ def initialize_population_random(
 
     logger.info(f"Initialized {len(population)} individuals (random)")
     return population
-
 
 
 # ==============================================================
@@ -898,15 +623,15 @@ def tournament_selection(
 # ==============================================================
 
 
-def mutation_perturb(individual: Individual) -> None:
-    if random.random() >= individual.mutation_rate:
-        return
-    strength = random.choices(
-        ["light", "medium", "heavy"],
-        weights=[0.70, 0.25, 0.05],  # tune
-        k=1,
-    )[0]
-    individual.tour = apply_perturbation(individual.tour, strength)
+# def mutation_perturb(individual: Individual) -> None:
+#     if random.random() >= individual.mutation_rate:
+#         return
+#     strength = random.choices(
+#         ["light", "medium", "heavy"],
+#         weights=[0.70, 0.25, 0.05],  # tune
+#         k=1,
+#     )[0]
+#     individual.tour = apply_perturbation(individual.tour, strength)
 
 
 def mutation_swap(tour: np.ndarray) -> None:
@@ -1663,7 +1388,7 @@ class r0123456:
 
         # Initialize population
         print_section("INITIALIZATION")
-        population = initialize_population_greedy_sparse_aware(
+        population = initialize_population_mixed(
             problem, GA.POPULATION_SIZE
         )
         self._log_population_stats(population, "Initial Population")
@@ -1901,7 +1626,8 @@ class r0123456:
 
         # Apply standard mutation
         if FEATURES.USE_MUTATION_PERTURB:
-            mutation_perturb(child)
+            # mutation_perturb(child)
+            mutation(child)
         elif FEATURES.USE_MUTATION_CLASSIC:
             mutation(child)
 
@@ -2123,6 +1849,131 @@ def avg_overlap_ratio_with_sample(
         idx = sample_idxs[k]
         s += directed_edge_overlap_count(child_succ, pop_succs[idx]) / n
     return s / sample_idxs.shape[0]
+
+def perturb_double_bridge(tour: np.ndarray) -> np.ndarray:
+    n = len(tour)
+    if n < 8:
+        return tour.copy()
+
+    p1, p2, p3 = sorted(random.sample(range(1, n), 3))
+    A = tour[:p1]
+    B = tour[p1:p2]
+    C = tour[p2:p3]
+    D = tour[p3:]
+
+    # Randomly choose a reconnection pattern
+    patterns = [
+        np.concatenate([A, C, B, D]),
+        np.concatenate([A, D, C, B]),
+        np.concatenate([A, C, D, B]),
+        np.concatenate([A, B, D, C]),
+    ]
+    return random.choice(patterns)
+
+
+def perturb_multi_swap(tour: np.ndarray, k: int) -> np.ndarray:
+    """Apply k random city swaps to the tour."""
+    tour = tour.copy()
+    n = len(tour)
+    for _ in range(k):
+        i, j = random.sample(range(n), 2)
+        tour[i], tour[j] = tour[j], tour[i]
+    return tour
+
+
+def perturb_segment_reverse(tour: np.ndarray) -> np.ndarray:
+    """Reverse a random contiguous segment of the tour."""
+    tour = tour.copy()
+    i, j = sorted(random.sample(range(len(tour)), 2))
+    tour[i : j + 1] = tour[i : j + 1][::-1]
+    return tour
+
+
+def apply_perturbation(tour: np.ndarray, strength: str) -> np.ndarray:
+    """
+    Apply perturbation of specified strength to diversify the tour.
+
+    Args:
+        tour: Original tour
+        strength: 'light', 'medium', or 'heavy'
+
+    Returns:
+        Perturbed tour
+    """
+    n = len(tour)
+
+    if strength == "light":
+        k = max(1, n // GA.PERTURB_LIGHT_SWAPS)
+        return perturb_multi_swap(tour, k)
+
+    if strength == "medium":
+        k = max(2, n // GA.PERTURB_MEDIUM_SWAPS)
+        return random.choice(
+            [
+                lambda t: perturb_double_bridge(t),
+                lambda t: perturb_multi_swap(t, k),
+                lambda t: perturb_segment_reverse(t),
+            ]
+        )(tour)
+
+    # Heavy perturbation: apply multiple operations
+    result = tour.copy()
+    k = max(3, n // GA.PERTURB_HEAVY_SWAPS)
+    for _ in range(GA.PERTURB_HEAVY_ITERATIONS):
+        result = random.choice(
+            [
+                perturb_double_bridge,
+                lambda x: perturb_multi_swap(x, k),
+                perturb_segment_reverse,
+            ]
+        )(result)
+    return result
+
+
+def repair_tour(
+    problem: TravelingSalesmanProblem,
+    tour: np.ndarray,
+) -> Optional[np.ndarray]:
+    """
+    Attempt to repair a tour containing invalid (infinite) edges.
+
+    Strategy: For each invalid edge, try swapping with later cities
+    until a valid configuration is found.
+
+    Returns:
+        Repaired tour if successful, None if repair fails
+    """
+    tour = tour.copy()
+    n = len(tour)
+
+    for _ in range(GA.MAX_REPAIR_ATTEMPTS):
+        repaired_any = False
+
+        for i in range(n):
+            a = tour[i]
+            b = tour[(i + 1) % n]
+
+            # Check if current edge is invalid
+            if not np.isfinite(problem.get_distance(a, b)):
+                # Try swapping b with a later city c
+                for j in range(i + 2, n):
+                    c = tour[j]
+
+                    # Check if new edges would be valid
+                    if np.isfinite(problem.get_distance(a, c)) and np.isfinite(
+                        problem.get_distance(c, b)
+                    ):
+                        tour[(i + 1) % n], tour[j] = tour[j], tour[(i + 1) % n]
+                        repaired_any = True
+                        break
+
+                if not repaired_any:
+                    return None  # Unrecoverable edge
+
+        if not repaired_any:
+            return tour  # Fully repaired
+
+    return None  # Max attempts exceeded
 
 
 # ==============================================================
