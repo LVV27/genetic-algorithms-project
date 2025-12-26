@@ -4,7 +4,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import numba
@@ -65,6 +65,7 @@ class GAParams:
 
     # Initialization Parameters
     GREEDY_FRACTION: float = 0.20  # Fraction of population initialized with greedy
+    GREEDY_ATTEMPTS_MULTIPLIER: int = 20  # Try this many greedy starts per target slot
 
     # Logging Parameters
     LOG_INTERVAL: int = 100
@@ -264,74 +265,21 @@ def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
 # ==============================================================
 
 
-@numba.njit(cache=True)
-def build_successor(tour: np.ndarray) -> np.ndarray:
-    """
-    Build successor representation: succ[city] = next_city in tour.
-    Used for fast edge overlap computation.
-    """
-    n = tour.shape[0]
-    succ = np.empty(n, dtype=np.int32)
-    for i in range(n):
-        a = tour[i]
-        b = tour[(i + 1) % n]
-        succ[a] = b
-    return succ
-
-
-@numba.njit(cache=True)
-def best_rival_index_by_edge_overlap(
-    child_succ: np.ndarray,
-    pop_succs: np.ndarray,
-    child_fit: float,
-    pop_fits: np.ndarray,
-) -> int:
-    """
-    Find population member with maximum directed edge overlap with child.
-    Tie-breaker: closest fitness.
-    """
-    pop_size = pop_succs.shape[0]
-    n = child_succ.shape[0]
-
-    best_idx = 0
-    best_overlap = -1
-    best_fit_diff = 1e300
-
-    for i in range(pop_size):
-        overlap = 0
-        for city in range(n):
-            if child_succ[city] == pop_succs[i, city]:
-                overlap += 1
-
-        fit_diff = abs(child_fit - pop_fits[i])
-
-        if (overlap > best_overlap) or (
-            overlap == best_overlap and fit_diff < best_fit_diff
-        ):
-            best_overlap = overlap
-            best_fit_diff = fit_diff
-            best_idx = i
-
-    return best_idx
-
-
 def edge_diversity(population: List[Individual]) -> float:
-    """
-    Compute population diversity as fraction of unique directed edges.
-    Higher values indicate more diversity.
-    """
     if not population:
         return 0.0
 
-    n = len(population[0].tour)
+    tours = [ind.tour for ind in population]
+    pop_size = len(tours)
+    n = len(tours[0])
+
     edges = set()
 
-    for ind in population:
-        t = ind.tour
+    for t in tours:
         for i in range(n):
-            edges.add((int(t[i]), int(t[(i + 1) % n])))
+            edges.add((t[i], t[(i + 1) % n]))
 
-    denom = min(len(population) * n, n * (n - 1))
+    denom = min(pop_size * n, n * (n - 1))
     return len(edges) / denom
 
 
@@ -393,17 +341,17 @@ def initialize_population_mixed(
     num_random_target = population_size - num_greedy_target
 
     logger.info(f"Generating {num_greedy_target} greedy solutions...")
-    greedy_count = 0
-    max_greedy_attempts = num_greedy_target * 3
+
+    max_greedy_attempts = num_greedy_target * GA.GREEDY_ATTEMPTS_MULTIPLIER
 
     start_cities = random.sample(
-        range(problem.num_cities), min(problem.num_cities, max_greedy_attempts)
+        range(problem.num_cities),
+        min(problem.num_cities, max_greedy_attempts),
     )
 
-    for start_city in start_cities:
-        if greedy_count >= num_greedy_target:
-            break
+    greedy_candidates: List[Individual] = []
 
+    for start_city in start_cities:
         tour = nearest_neighbor_greedy(problem, start_city)
         if tour is None:
             continue
@@ -412,8 +360,13 @@ def initialize_population_mixed(
         ind.evaluate(problem)
 
         if np.isfinite(ind.fitness):
-            population.append(ind)
-            greedy_count += 1
+            greedy_candidates.append(ind)
+
+    greedy_candidates.sort(key=lambda ind: ind.fitness)
+    greedy_selected = greedy_candidates[:num_greedy_target]
+
+    population.extend(greedy_selected)
+    greedy_count = len(greedy_selected)
 
     logger.info(f"Generating {num_random_target} random solutions...")
     random_count = 0
@@ -547,6 +500,9 @@ def order_crossover(
 # ==============================================================
 
 
+# TODO understand this
+
+
 def elimination_with_crowding(
     population: List[Individual],
     offspring: List[Individual],
@@ -593,12 +549,63 @@ def elimination_with_crowding(
     return survivors[:population_size]
 
 
+@numba.njit(cache=True)
+def build_successor(tour: np.ndarray) -> np.ndarray:
+    """
+    Build successor representation: succ[city] = next_city in tour.
+    Used for fast edge overlap computation.
+    """
+    n = tour.shape[0]
+    succ = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        a = tour[i]
+        b = tour[(i + 1) % n]
+        succ[a] = b
+    return succ
+
+
+@numba.njit(cache=True)
+def best_rival_index_by_edge_overlap(
+    child_succ: np.ndarray,
+    pop_succs: np.ndarray,
+    child_fit: float,
+    pop_fits: np.ndarray,
+) -> int:
+    """
+    Find population member with maximum directed edge overlap with child.
+    Tie-breaker: closest fitness.
+    """
+    pop_size = pop_succs.shape[0]
+    n = child_succ.shape[0]
+
+    best_idx = 0
+    best_overlap = -1
+    best_fit_diff = 1e300
+
+    for i in range(pop_size):
+        overlap = 0
+        for city in range(n):
+            if child_succ[city] == pop_succs[i, city]:
+                overlap += 1
+
+        fit_diff = abs(child_fit - pop_fits[i])
+
+        if (overlap > best_overlap) or (
+            overlap == best_overlap and fit_diff < best_fit_diff
+        ):
+            best_overlap = overlap
+            best_fit_diff = fit_diff
+            best_idx = i
+
+    return best_idx
+
+
 # ==============================================================
 # MAIN SOLVER
 # ==============================================================
 
 
-class r0123456:
+class r0843621:
     """
     Genetic Algorithm solver for TSP.
 
@@ -670,7 +677,7 @@ class r0123456:
 
             # Check time limit
             if self.reporter.report(gen_mean, gen_best.fitness, gen_best.tour) < 0:
-                logger.info("\n  ⏱  Time limit reached")
+                logger.info("\nTime limit reached")
                 break
 
         # Final statistics
