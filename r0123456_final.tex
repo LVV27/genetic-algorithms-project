@@ -34,7 +34,7 @@
 
 %opening
 \title{\vspace{-2cm}Evolutionary Algorithms: \switch{Final}{Retake} report}
-\author{\ReplaceMe{Your Name (r0123456)}}
+\author{\ReplaceMe{Lowie Van Vyve (r0843621)}}
 
 \begin{document}
 \fontfamily{ppl}
@@ -64,19 +64,33 @@ Remove the current section from your final report.
 \section{Metadata}
 
 \begin{itemize}
- \item \textbf{Group members during group phase:} \ReplaceMe{Group member 1} and \ReplaceMe{group member 2}
- \item \textbf{Time spent on group phase:} \ReplaceMe{10 hours}
- \item \textbf{Time spent on final code:} \ReplaceMe{40 hours}
- \item \textbf{Time spent on final report:} \ReplaceMe{10 hours}
+ \item \textbf{Group members during group phase:} Thomas Borry, Mikhail Chakhovich, and Victor Geneste
+ \item \textbf{Time spent on group phase:} 12 hours
+ \item \textbf{Time spent on final code:} 32 hours
+ \item \textbf{Time spent on final report:} 6 hours
 \end{itemize}
 
 \section{Changes since \switch{the group phase}{your previous submission} \hfill(target: $0.25$ pages)}
 
 \ReplaceMe{List the main changes that you implemented since \switch{the group phase}{your previous submission of the project}. You do not need to explain the employed techniques in detail; for this, you should refer to the appropriate subsection of section 3 of the report.}
 
+\subsection{Changes since the group phase}
+
 \begin{enumerate}
- \item \ReplaceMe{State here the modification that you made (e.g., replaced top-$\lambda$ selection with $k$-tournament selection).}
- \item \dots
+	\item \ReplaceMe{State here the modification that you made (e.g., replaced top-$\lambda$ selection with $k$-tournament selection).}
+	\item \dots
+\end{enumerate}
+
+\begin{enumerate}
+	\item Replaced elitist \((\lambda+\mu)\) selection with deterministic crowding based on directed edge overlap to maintain diversity.
+	\item Switched crossover operator from Partially Mapped Crossover (PMX) to Order Crossover (OX).
+	\item Extended mutation to include weighted mix of swap, inversion, insertion, with self-adaptive rate.
+	\item Added 2-opt local search as a memetic refinement, auto-disabled on sparse instances.
+	\item Added a feasibility mask with penalized distance matrix.
+	\item Updated population initialization with a mixed strategy using greedy fraction and many restart attempts.
+	\item Increased selection pressure by retuning tournament size from 3 to 5, setting crossover probability to 1.0.
+	\item Accelerated bottlenecks using Numba JIT for more generations within the time budget.
+	\item Added convergence diagnostic tools, including edge-based diversity metrics and structured logging.
 \end{enumerate}
 
 \section{Final design of the evolutionary algorithm \hfill(target: $3.5$ pages)} 
@@ -88,14 +102,16 @@ Remove the current section from your final report.
 \ReplaceMe{List the three main components of your evolutionary algorithm for this project. That is, what are its most distinctive characteristics, what components am I not allowed to change to a more basic version? Ideally these are some of the more advanced features that you added since \switch{the group phase}{your previous submission}.}
 
 \begin{enumerate}
- \item \ReplaceMe{Just state the feature, you do not need to explain it, instead refer to the appropriate section below.}
- \item \dots
- \item \dots
+	\item \textbf{Mixed population initialization (greedy + random)} using a nearest-neighbour heuristic to seed a small fraction of the initial population, with the remaining individuals sampled uniformly at random.
+	
+	\item \textbf{Deterministic crowding survivor selection} based on directed edge overlap (successor representation), where each offspring competes with its most similar individual in the current population to preserve diversity.
+	
+	\item \textbf{Memetic refinement via 2-opt local search} applied to improving best solutions (disabled automatically for sparse instances), combining evolutionary search with local improvement.
 \end{enumerate}
 
 \subsection{The main loop}
 
-\ReplaceMe{Make a picture of the ``flow'' in your evolutionary algorithm, similar to the example below. Include all the main components (mutation, recombination, selection, elimination, initialization, local search operators, diversity promotion mechanisms). There are no formal requirements on how to do this, as long as it is clear and you can efficiently explain your complete evolutionary algorithm using this picture at the exam. Contrary to the picture below, include the specific techniques, e.g., top-$\lambda$ elimination, $k$-tournament selection, where possible.
+\ReplaceMe{Make a picture of the ``flow'' in your evolutionary algorithm, similar to the example below. Include all the main components (mutation, recombination, selection, elimination, initialization, local search operators, diversity promotion mechanisms). There are no formal requirements on how to do this, as long as it is clear and you can efficiently explain your complete evolutionary algorithm using this picture at the exam. Contrary to the picture below, include the specific techniques, e.g., top-$\lambda$ elimination, $k$-tournament selection, where possible.}
 
 \begin{center}\begin{tikzpicture}
 \draw[->,>=stealth] (0,0) -- (3.1,0);
@@ -107,7 +123,7 @@ Remove the current section from your final report.
 \node[draw,rectangle,thick,fill=white] at (8,2) {Variation};
 \node[draw,rectangle,thick,fill=white] at (8,-2) {Evaluation};
 \end{tikzpicture}\end{center}
-}
+
 
 \RemoveMe{\textbf{The questions from \cref{sec_rep} to \cref{sec_oth} in blue are there to guide which topics to discuss}, rather than an exact list of questions that must be answered. Feel free to add more items to discuss.}
 
@@ -115,45 +131,211 @@ Remove the current section from your final report.
 
 \ReplaceMe{How do you represent the candidate solutions? What is your motivation to choose this one? What other options did you consider? How did you implement this specifically in Python (e.g., a list, set, numpy array, etc)?}
 
+Candidate solutions are represented as a \textbf{permutation} of the city indices, i.e.\ a tour
+$\pi = (\pi_1,\dots,\pi_n)$ that visits each city exactly once. The objective value is the total length of the
+Hamiltonian cycle induced by this permutation (including the return edge to the first city).
+
+This representation was chosen because it is the \textbf{natural encoding} for the TSP, guarantees feasibility
+(no duplicated/missing cities) when using permutation-aware operators (e.g.\ OX crossover and inversion-based
+mutations), and allows efficient evaluation and local search (2-opt acts directly on segments of the permutation).
+Alternatives considered were an \textbf{adjacency / successor representation} ($\text{succ}[i]=j$) and
+\textbf{edge-set encodings}; these can simplify overlap/diversity calculations but make crossover and repair
+more involved.
+
+In Python, each tour is stored as a \texttt{numpy.ndarray} of integers (attribute \texttt{Individual.tour}),
+which enables fast slicing/reversal (used by inversion mutation and 2-opt) and supports Numba-accelerated fitness
+evaluation. The deterministic crowding diversity measure additionally builds a temporary successor array
+\texttt{succ} from the permutation for fast directed edge-overlap computation.
+
+
 \subsection{Initialization}
 
 \ReplaceMe{How do you initialize the population? How did you determine the number of individuals? Did you implement advanced initialization mechanisms (local search operators, heuristic solutions)? If so, describe them. Do you believe your approach maintains sufficient diversity? How do you ensure that your population enrichment scheme does not immediately take over the population? Did you implement other initialization schemes that did not make it to the final version? Why did you discard them? How did you determine the population size?}
+
+The initial population is created using a \textbf{mixed strategy}: a small fraction
+($\lfloor \texttt{GREEDY\_FRACTION}\cdot \lambda \rfloor$) is generated with a \textbf{nearest-neighbour greedy}
+heuristic from multiple random start cities, and the remaining individuals are \textbf{uniformly random
+	permutations}. All candidates are evaluated immediately and only tours with finite fitness are kept.
+
+The population size was set to $\lambda=100$ after empirical tuning: larger populations increased runtime and
+reduced the number of generations within the time limit, while smaller populations converged prematurely. The
+greedy component is intentionally capped to a very small fraction (default $\texttt{GREEDY\_FRACTION}=0.01$),
+so enrichment provides \emph{good building blocks} without taking over the population; the bulk of the
+population remains random, which maintains diversity from the start.
+
+
+TODO
+dont use we stupid
+
+We also considered (and tested) using a much larger greedy seed set and applying local search during
+initialization, but these settings reduced diversity and consumed too much of the available time budget; hence,
+local search is only applied later on newly improved best solutions instead of during initialization.
+
 
 \subsection{Selection operators}
 
 \ReplaceMe{Which selection operators did you implement? If they are not from the slides, describe them. Can you motivate why you chose this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other selection operators not included in the final version? Why did you discard them?}
 
+Parent selection is performed using \textbf{$k$-tournament selection}: for each parent, $k$ individuals are
+sampled uniformly at random from the current population and the individual with the lowest fitness is selected.
+This operator was chosen because it is simple, efficient, and provides a controllable trade-off between
+selection pressure and diversity.
+
+The main parameter is the tournament size $k$ (set to $k=5$). Larger $k$ increases selection pressure and
+accelerates convergence but risks premature convergence; smaller $k$ preserves diversity but slows progress.
+In the final version, $k$ is kept constant (no dynamic schedule).
+
+TODO
+
+Other selection schemes were considered (e.g.\ fitness-proportional or rank-based selection), but they were
+more sensitive to scaling/noise and did not provide a clear improvement over tournament selection in our tuning,
+so they were discarded.
+
 \subsection{Mutation operators}
 
 \ReplaceMe{Which mutation operators did you implement? If they are not from the slides, describe them. How do you choose among several mutation operators? Do you believe it will introduce sufficient randomness? Can that be controlled with parameters? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other mutation operators not included in the final version? Why did you discard them?}
+
+We use a \textbf{mutation portfolio} for permutation tours: \textit{swap} (exchange two cities), \textit{inversion}
+(reverse a contiguous segment), and \textit{insertion} (remove one city and insert it elsewhere). If mutation is
+triggered, the operator is chosen by a \textbf{weighted roulette} (in the final version: inversion is preferred,
+as it typically performs better for the TSP, while swap/insertion provide additional perturbations).
+
+Randomness is controlled by an \textbf{individual-specific mutation rate} $\alpha$:
+mutation is applied with probability $\alpha$, where $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ at
+initialization. The rate is then inherited by offspring (i.e.\ a simple self-adaptive parameter), so different
+lineages can maintain different exploration levels. We do not use a generation-dependent schedule for $\alpha$.
+
+
+TODO
+no wee
+
+We tested simpler mutation-only setups (e.g.\ swap-only) but observed weaker exploration and slower improvement,
+hence the final multi-operator configuration was kept.
 
 \subsection{Recombination operators}
 
 \ReplaceMe{Which recombination operators did you implement? If they are not from the slides, describe them. How do you choose among several recombination operators? Why did you choose these ones specifically? Explain how you believe that these operators can produce offspring that combine the best features from their parents. How does your operator behave if there is little overlap between the parents? Can your recombination be controlled with parameters; what behavior do they change? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other recombination operators not included in the final version? Why did you discard them? Did you consider recombination with arity strictly greater than 2?}
 
+Recombination is performed with \textbf{Order Crossover (OX)} for permutation encodings. OX copies a random
+contiguous segment from the first parent and then fills the remaining positions by scanning the second parent in
+order and inserting the cities that are not yet present. This preserves \textbf{relative order information} from
+the second parent while keeping a block (subtour fragment) from the first parent.
+
+We use a single recombination operator (no operator portfolio); crossover is applied with probability
+$p_c$ (final setting: $p_c=1$) and otherwise the first parent is cloned. The segment boundaries are sampled
+uniformly at random, which controls how disruptive the crossover is (short segments $\rightarrow$ more parent-2
+order preserved; long segments $\rightarrow$ more parent-1 block preserved). No self-adaptivity or
+generation-dependent schedule is used for $p_c$.
+
+
+TODO
+
+When parents have little overlap, OX still produces a valid permutation: the copied segment remains intact and
+the rest is essentially the order induced by parent 2, yielding meaningful mixing without requiring repair.
+We considered other permutation crossovers (e.g.\ PMX / edge-based variants), but OX was selected due to its
+robustness and good empirical performance in our tuning. We did not use arity $>2$ recombination in the final
+version.
+
 \subsection{Elimination operators}
 
 \ReplaceMe{Which elimination operators did you implement? If they are not from the slides, describe them. Why did you select this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other elimination operators not included in the final version? Why did you discard them?} 
+
+Survivor selection uses \textbf{deterministic crowding}. After generating offspring, each child competes with the
+\emph{most similar} individual in the current population (its ``rival'') and replaces it only if it has better
+fitness. Similarity is measured by \textbf{directed edge overlap} using a successor representation
+($\mathrm{succ}[i] =$ next city), i.e.\ the number of matching directed edges. Ties are broken by choosing the
+closest fitness.
+
+This elimination operator was selected to \textbf{preserve diversity} and reduce premature convergence, while
+still enforcing progress through local competition rather than global truncation. It has no critical continuous
+hyperparameters in our implementation; the main design choice is the similarity metric (edge overlap). We do not
+vary elimination settings over time.
+
+We also used standard \textbf{($\lambda+\mu$) truncation} earlier (keep best individuals from parents+offspring),
+but it increased selection pressure too much and reduced diversity, so deterministic crowding was preferred in
+the final version.
 
 \subsection{Local search operators}
 
 \ReplaceMe{What local search operators did you implement? Describe them. Did they cause a significant improvement in the performance of your algorithm? Why (not)? Did you consider other local search operators that did not make the cut? Why did you discard them? Are there parameters that need to be determined in your operator? Do you use an advanced scheme to determine them (e.g., adaptive or self-adaptive)?}
 
+We implemented a \textbf{2-opt} local search operator. A 2-opt move selects two indices $(i,j)$ and reverses the
+segment $[i,\dots,j]$, which replaces two edges by two new edges; improving moves are accepted iteratively until
+no further improvement is found or a maximum number of iterations is reached. To avoid invalid edges on sparse
+instances, candidate moves are only considered if the newly introduced edges are feasible; furthermore, 2-opt is
+\textbf{skipped entirely} when the instance is detected as sparse.
+
+In the final algorithm, 2-opt is applied \textbf{only when a new global best is found}, which provided noticeable
+extra improvements without dominating the runtime. The main parameters are the maximum number of 2-opt
+iterations and the improvement strategy (first-improvement vs.\ best-improvement); we use best-improvement with
+a fixed iteration cap. No adaptive/self-adaptive control is used.
+
+We considered applying local search to all offspring or during initialization, but this consumed too much time and
+reduced effective exploration, so the final design restricts local search to rare best-solution updates.
+
 \subsection{Diversity promotion mechanisms}
 
 \ReplaceMe{Did you implement a diversity promotion scheme? If yes, which one? If no, why not? Describe the mechanism you implemented. In what sense does the mechanism improve the performance of your evolutionary algorithm? Are there parameters that need to be determined? Did you use an advanced scheme to determine them?}
+
+Yes. Diversity is promoted through the \textbf{deterministic crowding} elimination scheme. Instead of globally
+keeping only the best individuals, each offspring competes with the \emph{most similar} individual in the current
+population (its rival) and replaces it only if it has better fitness. Similarity is measured by \textbf{directed
+	edge overlap} (computed via a successor representation), which encourages the population to maintain multiple
+coexisting ``niches'' of tours.
+
+This mechanism improves performance by \textbf{reducing premature convergence}: improvements are introduced
+locally within similar solutions, while dissimilar solutions are less likely to be overwritten by a single dominant
+lineage. In our implementation there are no tunable hyperparameters beyond the chosen similarity metric; we do
+not use adaptive or time-varying diversity control.
 
 \subsection{Stopping criterion}
 
 \ReplaceMe{Which stopping criterion did you implement? Did you combine several criteria?}
 
+
+TODO it is the restriction not my stopping criteria
+
+The algorithm uses a \textbf{time-based stopping criterion}: in each generation we call the provided
+\texttt{Reporter.report(...)} function, and the run terminates as soon as it signals that the time limit is reached
+(return value $< 0$). We do not combine this with additional criteria (e.g.\ maximum generations without
+improvement), although a generation counter is present as a practical upper bound.
+
 \subsection{Parameter selection}
 
 \ReplaceMe{For all of the parameters that are not automatically determined by adaptivity or self-adaptivity (as you have described above), describe how you determined them. Did you perform a hyperparameter search? How did you do this? How did you determine these parameters would be valid both for small and large problem instances?}
 
+TODO lot of blabla
+
+All fixed parameters (e.g.\ $\lambda=100$, $\mu=200$, $k=5$, $p_c=1$, operator weights, 2-opt iteration cap,
+and the sparsity threshold) were determined via \textbf{empirical tuning} on the provided training instances.
+We performed a small manual hyperparameter search: starting from the group-phase baseline, we varied one
+parameter group at a time (population/offspring sizes, selection pressure, mutation bounds and operator mix,
+and local search budget) and kept changes that improved the final objective \emph{within the time limit} and
+showed stable behavior across multiple runs (different random seeds).
+
+To avoid overfitting to a single instance size, tuning was checked on both smaller and larger instances, focusing
+on settings that were \textbf{time-robust}: (i) moderate population sizes to allow many generations, (ii) constant
+selection pressure ($k$ fixed), and (iii) a bounded local-search budget applied only on rare best updates.
+Additionally, sparse instances are handled explicitly (penalized evaluation and skipping 2-opt), which improves
+robustness across different graph structures.
+
 \subsection{Other considerations}\label{sec_oth}
 
 \ReplaceMe{Did you consider other items not listed above, such as elitism, multiobjective optimization strategies (e.g., island model, pareto front approximation), a parallel implementation, or other interesting computational optimizations (e.g. using advanced algorithms or data structures)? You can describe them here or add additional subsections as needed.}
+
+We considered several additional extensions. \textbf{Explicit elitism} is not added as a separate mechanism,
+because the global best is tracked and deterministic crowding already tends to preserve strong individuals; adding
+extra elitism increased selection pressure and reduced diversity in preliminary tests.
+
+We did not implement \textbf{multiobjective} or \textbf{island-model} strategies due to time/complexity constraints
+and because the provided evaluation is single-objective (tour length). Likewise, we did not implement explicit
+\textbf{parallelization}; however, we focused on computational optimizations that improve performance within a
+single process.
+
+The main computational optimization is \textbf{Numba acceleration} for the fitness evaluation and core helper
+routines (nearest-neighbour construction, successor building, and edge-overlap computations). In addition, sparse
+instances are handled explicitly via \textbf{penalized distances} for missing edges and by \textbf{skipping 2-opt}
+when the graph is sparse, which avoids wasting time on infeasible or expensive local-search moves.
 
 
 \section{Numerical experiments \hfill(target: 1.5 pages)}
@@ -166,6 +348,38 @@ Remove the current section from your final report.
 
 Report the main characteristics of the computer system on which you ran your evolutionary algorithm. Include the processor or CPU (including the number of cores and clock speed), the amount of main memory, and the version of Python 3.}
 
+\paragraph{Algorithm parameters (fixed for all experiments).}
+Unless stated otherwise, the following parameter values were used:
+\begin{itemize}
+	\item Population / offspring sizes: $\lambda=\texttt{POPULATION\_SIZE}=100$, $\mu=\texttt{OFFSPRING\_SIZE}=200$.
+	\item Parent selection: $k$-tournament with $k=\texttt{TOURNAMENT\_K}=5$.
+	\item Recombination: Order Crossover (OX) with $p_c=\texttt{CROSSOVER\_PROB}=1.0$.
+	\item Mutation: self-adaptive rate $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ with
+	$\alpha_{\min}=\texttt{MUTATION\_ALPHA\_MIN}=0.08$ and $\alpha_{\max}=\texttt{MUTATION\_ALPHA\_MAX}=0.20$;
+	operator mix (swap/inversion/insertion) with weights $(0.25,\,0.55,\,0.20)$.
+	\item Elimination: deterministic crowding using directed edge overlap (no additional tunable parameters).
+	\item Handling missing edges: penalize $\infty$ distances enabled (\texttt{USE\_PENALTY\_FOR\_INF=True}) with
+	penalty factor $\texttt{INF\_PENALTY\_FACTOR}=10$.
+	\item Local search: 2-opt enabled (\texttt{USE\_TWO\_OPT=True}), best-improvement
+	(\texttt{TWO\_OPT\_FIND\_BEST=True}), max iterations $\texttt{TWO\_OPT\_MAX\_ITERS}=200$, applied only on new
+	global best and skipped on sparse instances.
+	\item Sparsity detection threshold: $\texttt{SPARSITY\_THRESHOLD}=0.10$.
+\end{itemize}
+
+\paragraph{Instance-dependent parameters.}
+The only instance-dependent quantities are derived from the number of cities $n$ in the input distance matrix:
+each individual is a permutation of length $n$, and the sparsity detector computes the fraction of off-diagonal
+$\infty$ entries over $n(n-1)$.
+
+\paragraph{System information.}
+All experiments were executed on:
+\begin{itemize}
+	\item OS: Fedora Linux 42 (Workstation Edition), kernel 6.17.13-200.fc42.x86\_64
+	\item CPU: AMD Ryzen 5 4500U, 6 cores, base clock reported at 2.38\,GHz
+	\item Memory: 8\,GiB RAM (7.12\,GiB usable reported)
+	\item Python: \texttt{Python 3.13.11}
+\end{itemize}
+
 
 \subsection{tour50.csv}
 
@@ -176,6 +390,9 @@ What is the best tour length you found? What is the corresponding sequence of ci
 Interpret your results. How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, quality of the best solution, etc)? Is your solution close to the optimal one?
 
 Solve this problem 500 times and record the results. Make a histogram of the final mean fitnessess and the final best fitnesses of the 500 runs. Comment on this figure: is there a lot of variability in the results, what are the means and the standard deviations?}
+
+[35,5,21,48,16,42,18,25,27,9,7,14,31,13,29,12,17,44,47,20,26,45,43,15,32,2,49,23,19,6,22,8,38,10,11,40,1,3,24,36,0,46,4,39,28,37,33,34,30,41]
+[35,5,48,21,18,42,16,25,27,9,7,14,31,13,29,12,17,44,47,20,26,45,43,15,32,2,49,23,19,6,22,8,38,10,11,40,1,3,24,36,0,46,4,39,28,37,33,34,30,41]
 
 \subsection{tour250.csv}\label{sec_shorttour}
 \ReplaceMe{Run your algorithm on this benchmark problem (with the 5 minute time limit from the Reporter). \textbf{Include a typical convergence graph, by plotting the mean and best objective values in function of the time} (for example based on the output of the Reporter class).
