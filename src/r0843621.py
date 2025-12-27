@@ -74,7 +74,7 @@ class GAParams:
     # ==========================================================
     # CROSSOVER OPERATOR
     # ==========================================================
-    CROSSOVER_PROB: float = 1
+    CROSSOVER_PROB: float = 1.0
 
     # ==========================================================
     # MUTATION OPERATOR (Self-adaptive mutation rate bounds)
@@ -91,25 +91,18 @@ class GAParams:
     # FITNESS EVALUATION / CONSTRAINT HANDLING
     # ==========================================================
     USE_PENALTY_FOR_INF: bool = True
-    INF_PENALTY_FACTOR: float = 10
+    INF_PENALTY_FACTOR: float = 10.0
 
     # ==========================================================
     # LOCAL SEARCH OPERATORS (Or-opt)
     # ==========================================================
     USE_OR_OPT: bool = True  # Enable / disable Or-opt local search
     OR_OPT_MAX_ITERS: int = 10  # Max iterations for Or-opt
-    OR_OPT_MAX_CHAIN_LEN: int = 7  # Maximum chain length (1-3)
+    OR_OPT_MAX_CHAIN_LEN: int = 3  # Maximum chain length (1-3)
 
     # Local search scheduling (GA-driven)
     LS_INTERVAL: int = 100  # apply LS every N generations
     LS_TOP_K: int = 1  # apply LS to top K individuals
-    LS_MODE: int = 1  # 0=first improvement, 1=best improvement for 2-opt
-
-    # ==========================================================
-    # DIVERSITY CONTROL / MONITORING
-    # ==========================================================
-    DIVERSITY_MIN: float = 0.08  # 8%
-    DIVERSITY_COOLDOWN: int = 200  # minimum gens between injections
 
     # ==========================================================
     # BENCHMARK / REFERENCE TARGETS
@@ -155,9 +148,7 @@ def print_stats_table(stats: dict) -> None:
 
 
 class TravelingSalesmanProblem:
-    """
-    TSP instance wrapper with distance matrix and optional edge penalties.
-    """
+    """TSP instance wrapper with distance matrix and optional edge penalties."""
 
     HEURISTIC_VALUES = {
         "tour50.csv": 15665,
@@ -172,7 +163,7 @@ class TravelingSalesmanProblem:
         self.num_cities = distance_matrix.shape[0]
         self.filename = filename
 
-        # For sparse graphs: track which edges are valid
+        # Track which edges are valid (for sparse graphs)
         self.feasible = np.isfinite(distance_matrix)
 
         # Detect sparsity
@@ -181,6 +172,7 @@ class TravelingSalesmanProblem:
         # Penalized matrix: replace Inf edges with large penalty
         self.penalized_matrix = self._build_penalized_matrix(distance_matrix)
 
+        # Set known heuristic value if available
         heuristic_value = self.HEURISTIC_VALUES.get(self.filename)
         if heuristic_value is not None:
             object.__setattr__(GA, "HEURISTIC", float(heuristic_value))
@@ -285,6 +277,7 @@ class Individual:
 
 
 def evaluate_tour(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
+    """Compute total tour length (dispatches to Numba or Python implementation)."""
     return (
         evaluate_tour_numba(tour, distance_matrix)
         if GA.USE_NUMBA
@@ -344,6 +337,7 @@ def nearest_neighbor_greedy(
     distance_matrix: np.ndarray,
     start_city: int,
 ) -> Optional[np.ndarray]:
+    """Construct a tour using nearest neighbor heuristic."""
     tour = (
         nearest_neighbor_greedy_numba(distance_matrix, start_city)
         if GA.USE_NUMBA
@@ -361,7 +355,7 @@ def nearest_neighbor_greedy_py(
     start_city: int,
 ) -> np.ndarray:
     """
-    Numba-accelerated nearest neighbor construction.
+    Nearest neighbor construction (Python implementation).
 
     Returns:
         Tour as array, or array filled with -1 if construction fails
@@ -406,7 +400,7 @@ def nearest_neighbor_greedy_numba(
     start_city: int,
 ) -> np.ndarray:
     """
-    Numba-accelerated nearest neighbor construction.
+    Nearest neighbor construction (Numba-accelerated).
 
     Returns:
         Tour as array, or array filled with -1 if construction fails
@@ -453,8 +447,8 @@ def initialize_population_mixed(
     Initialize population with mix of greedy and random solutions.
 
     Strategy:
-        - GA.GREEDY_FRACTION greedy nearest-neighbor tours
-        - Remainder random permutations
+        - GA.GREEDY_FRACTION of population initialized with greedy nearest-neighbor
+        - Remainder are random permutations (better is to use heavy permutations of greedy solutions)
     """
     population: List[Individual] = []
 
@@ -621,9 +615,6 @@ def order_crossover(
 # ==============================================================
 
 
-# TODO understand this
-
-
 def elimination_with_crowding(
     population: List[Individual],
     offspring: List[Individual],
@@ -631,7 +622,10 @@ def elimination_with_crowding(
 ) -> List[Individual]:
     """
     Deterministic crowding using directed edge overlap.
-    Each child competes with its most similar parent.
+
+    Each offspring competes with its most similar population member (measured by
+    shared edges). This maintains diversity by preventing genetically distant
+    individuals from replacing each other. Winner of each competition survives.
     """
     if not offspring:
         population.sort(key=lambda ind: ind.fitness)
@@ -641,6 +635,7 @@ def elimination_with_crowding(
     survivors.sort(key=lambda ind: ind.fitness)
     survivors = survivors[:population_size]
 
+    # Pre-compute successor arrays for efficient edge comparison
     pop_succs = np.empty((len(survivors), survivors[0].tour.shape[0]), dtype=np.int32)
     pop_fits = np.empty(len(survivors), dtype=np.float64)
 
@@ -656,10 +651,12 @@ def elimination_with_crowding(
         child_succ = build_successor(child.tour)
         child_fit = float(child.fitness)
 
+        # Find most similar individual in population
         rival_idx = best_rival_index_by_edge_overlap(
             child_succ, pop_succs, child_fit, pop_fits
         )
 
+        # Replace rival if child is better
         if child_fit < pop_fits[rival_idx]:
             survivors[rival_idx] = child
             pop_succs[rival_idx, :] = child_succ
@@ -670,6 +667,7 @@ def elimination_with_crowding(
 
 
 def build_successor(tour: np.ndarray) -> np.ndarray:
+    """Build successor representation (dispatches to Numba or Python)."""
     return build_successor_numba(tour) if GA.USE_NUMBA else build_successor_py(tour)
 
 
@@ -708,6 +706,7 @@ def best_rival_index_by_edge_overlap(
     child_fit: float,
     pop_fits: np.ndarray,
 ) -> int:
+    """Find population member with maximum edge overlap (dispatches implementation)."""
     return (
         best_rival_index_by_edge_overlap_numba(
             child_succ, pop_succs, child_fit, pop_fits
@@ -800,6 +799,12 @@ def or_opt_local_search(
     problem: TravelingSalesmanProblem,
     max_iters: int = 30,
 ) -> Tuple[float, int]:
+    """
+    Apply Or-opt local search (removes and reinserts subsequences).
+
+    Returns:
+        Tuple of (total_improvement, number_of_moves)
+    """
     if individual.fitness is None:
         individual.evaluate(problem)
 
@@ -837,6 +842,7 @@ def or_opt_improvement(
     feasible: np.ndarray,
     max_chain_len: int = 3,
 ) -> Tuple[int, int, int]:
+    """Find best Or-opt move (dispatches to Numba or Python)."""
     return (
         or_opt_improvement_numba(
             tour, distance_matrix, feasible, max_chain_len=max_chain_len
@@ -855,8 +861,11 @@ def or_opt_improvement_py(
     max_chain_len: int = 3,
 ) -> Tuple[int, int, int]:
     """
-    Returns (start_index, chain_len, insert_after_city)
-    where insert_after_city is the CITY id (not an index).
+    Find best Or-opt move.
+
+    Returns:
+        (start_index, chain_len, insert_after_city)
+        where insert_after_city is the CITY id (not an index)
     """
     n = tour.shape[0]
     best_improvement = 0.0
@@ -867,7 +876,7 @@ def or_opt_improvement_py(
     # Try chains of length 1..max_chain_len
     for chain_len in range(1, min(max_chain_len + 1, n - 1)):
         for start in range(n):
-            # Build a small removal mask for this chain (wrap-safe)
+            # Build removal mask for this chain (wrap-safe)
             remove = np.zeros(n, dtype=np.bool_)
             for k in range(chain_len):
                 remove[(start + k) % n] = True
@@ -879,7 +888,7 @@ def or_opt_improvement_py(
             first_in_chain = int(tour[start])
             last_in_chain = int(tour[end])
 
-            # Need to be able to connect before_chain -> after_chain after removal
+            # Check if we can bridge the gap after removal
             if not feasible[before_chain, after_chain]:
                 continue
 
@@ -891,9 +900,8 @@ def or_opt_improvement_py(
 
             # Try inserting between (insert_pos, insert_pos+1)
             for insert_pos in range(n):
-                # before_insert and after_insert are the edge you break to insert the chain
                 if remove[insert_pos] or remove[(insert_pos + 1) % n]:
-                    continue  # don't insert "inside" or adjacent to the removed chain
+                    continue
 
                 before_insert = int(tour[insert_pos])
                 after_insert = int(tour[(insert_pos + 1) % n])
@@ -925,7 +933,7 @@ def or_opt_improvement_py(
                     best_improvement = improvement
                     best_start = start
                     best_length = chain_len
-                    best_insert_after_city = before_insert  # <-- CITY, not index
+                    best_insert_after_city = before_insert
 
     return best_start, best_length, best_insert_after_city
 
@@ -938,8 +946,11 @@ def or_opt_improvement_numba(
     max_chain_len: int = 3,
 ) -> Tuple[int, int, int]:
     """
-    Returns (start_index, chain_len, insert_after_city)
-    where insert_after_city is the CITY id (not an index).
+    Find best Or-opt move (Numba-accelerated).
+
+    Returns:
+        (start_index, chain_len, insert_after_city)
+        where insert_after_city is the CITY id (not an index)
     """
     n = tour.shape[0]
     best_improvement = 0.0
@@ -950,7 +961,7 @@ def or_opt_improvement_numba(
     # Try chains of length 1..max_chain_len
     for chain_len in range(1, min(max_chain_len + 1, n - 1)):
         for start in range(n):
-            # Build a small removal mask for this chain (wrap-safe)
+            # Build removal mask for this chain (wrap-safe)
             remove = np.zeros(n, dtype=np.bool_)
             for k in range(chain_len):
                 remove[(start + k) % n] = True
@@ -962,7 +973,7 @@ def or_opt_improvement_numba(
             first_in_chain = tour[start]
             last_in_chain = tour[end]
 
-            # Need to be able to connect before_chain -> after_chain after removal
+            # Check if we can bridge the gap after removal
             if not feasible[before_chain, after_chain]:
                 continue
 
@@ -974,9 +985,8 @@ def or_opt_improvement_numba(
 
             # Try inserting between (insert_pos, insert_pos+1)
             for insert_pos in range(n):
-                # before_insert and after_insert are the edge you break to insert the chain
                 if remove[insert_pos] or remove[(insert_pos + 1) % n]:
-                    continue  # don't insert "inside" or adjacent to the removed chain
+                    continue
 
                 before_insert = tour[insert_pos]
                 after_insert = tour[(insert_pos + 1) % n]
@@ -1006,7 +1016,7 @@ def or_opt_improvement_numba(
                     best_improvement = improvement
                     best_start = start
                     best_length = chain_len
-                    best_insert_after_city = before_insert  # <-- CITY, not index
+                    best_insert_after_city = before_insert
 
     return best_start, best_length, best_insert_after_city
 
@@ -1014,6 +1024,7 @@ def or_opt_improvement_numba(
 def apply_or_opt_move(
     tour: np.ndarray, start: int, length: int, insert_after_city: int
 ) -> np.ndarray:
+    """Apply Or-opt move (dispatches to Numba or Python)."""
     return (
         apply_or_opt_move_numba(tour, start, length, insert_after_city)
         if GA.USE_NUMBA
@@ -1024,10 +1035,11 @@ def apply_or_opt_move(
 def apply_or_opt_move_py(
     tour: np.ndarray, start: int, length: int, insert_after_city: int
 ) -> np.ndarray:
+    """Apply Or-opt move by removing chain and reinserting it."""
     n = tour.shape[0]
-    dt = tour.dtype  # <-- keep everything consistent
+    dt = tour.dtype
 
-    # Mark which POSITIONS are removed (wrap-safe)
+    # Mark which positions are removed (wrap-safe)
     remove = np.zeros(n, dtype=np.bool_)
     for k in range(length):
         remove[(start + k) % n] = True
@@ -1045,18 +1057,17 @@ def apply_or_opt_move_py(
             remaining[r] = tour[i]
             r += 1
 
-    # Find insertion point in remaining: after the CITY insert_after_city
+    # Find insertion point: after the city insert_after_city
     ins_idx = -1
     for i in range(remaining.shape[0]):
         if remaining[i] == insert_after_city:
             ins_idx = i
             break
 
-    # Safety fallback (must return same dtype as other branch)
     if ins_idx == -1:
         return tour.copy()
 
-    # Build new tour by inserting chain AFTER ins_idx
+    # Build new tour by inserting chain after ins_idx
     new_tour = np.empty(n, dtype=dt)
     p = 0
     for i in range(remaining.shape[0]):
@@ -1070,15 +1081,15 @@ def apply_or_opt_move_py(
     return new_tour
 
 
-# not very computatioanlly heavy!!
 @numba.njit(cache=True)
 def apply_or_opt_move_numba(
     tour: np.ndarray, start: int, length: int, insert_after_city: int
 ) -> np.ndarray:
+    """Apply Or-opt move by removing chain and reinserting it (Numba-accelerated)."""
     n = tour.shape[0]
-    dt = tour.dtype  # <-- keep everything consistent
+    dt = tour.dtype
 
-    # Mark which POSITIONS are removed (wrap-safe)
+    # Mark which positions are removed (wrap-safe)
     remove = np.zeros(n, dtype=np.bool_)
     for k in range(length):
         remove[(start + k) % n] = True
@@ -1096,18 +1107,17 @@ def apply_or_opt_move_numba(
             remaining[r] = tour[i]
             r += 1
 
-    # Find insertion point in remaining: after the CITY insert_after_city
+    # Find insertion point: after the city insert_after_city
     ins_idx = -1
     for i in range(remaining.shape[0]):
         if remaining[i] == insert_after_city:
             ins_idx = i
             break
 
-    # Safety fallback (must return same dtype as other branch)
     if ins_idx == -1:
         return tour.copy()
 
-    # Build new tour by inserting chain AFTER ins_idx
+    # Build new tour by inserting chain after ins_idx
     new_tour = np.empty(n, dtype=dt)
     p = 0
     for i in range(remaining.shape[0]):
@@ -1129,29 +1139,43 @@ def apply_or_opt_move_numba(
 def combined_local_search(
     individual: Individual, problem: TravelingSalesmanProblem
 ) -> float:
+    """
+    Apply local search operators to improve solution.
+
+    Returns:
+        Total improvement achieved
+    """
     if individual.fitness is None:
         individual.evaluate(problem)
 
     total_before = float(individual.fitness)
 
-    # Stage 1: Or-opt
+    # Apply Or-opt
     if GA.USE_OR_OPT:
-        d, moves = or_opt_local_search(
+        improvement, moves = or_opt_local_search(
             individual, problem, max_iters=GA.OR_OPT_MAX_ITERS
         )
-        if d > 1e-9:
-            logger.info(f"    LS: Or-opt improved by {d:.2f} using {moves} moves")
+        if improvement > 1e-9:
+            logger.info(
+                f"    LS: Or-opt improved by {improvement:.2f} using {moves} moves"
+            )
 
     total_after = float(individual.fitness)
     return total_before - total_after
 
 
 # ==============================================================
-# DIVERSITY MEASUREMENT (for logging)
+# DIVERSITY MEASUREMENT (for logging only)
 # ==============================================================
 
 
 def edge_diversity(population: List[Individual]) -> float:
+    """
+    Measure edge diversity in population.
+
+    Returns:
+        Ratio of unique edges to maximum possible edges
+    """
     if not population:
         return 0.0
 
@@ -1160,13 +1184,37 @@ def edge_diversity(population: List[Individual]) -> float:
     n = len(tours[0])
 
     edges = set()
-
     for t in tours:
         for i in range(n):
             edges.add((t[i], t[(i + 1) % n]))
 
     denom = min(pop_size * n, n * (n - 1))
     return len(edges) / denom
+
+
+def count_vs_heuristic(
+    population: List[Individual], heuristic: float, within_pct: float = 0.15
+) -> Tuple[int, int]:
+    """
+    Count solutions better than or near heuristic benchmark.
+
+    Returns:
+        (solutions_beating_heuristic, solutions_within_threshold)
+    """
+    beat = 0
+    within = 0
+    thresh = (1.0 + within_pct) * heuristic
+
+    for ind in population:
+        f = ind.fitness
+        if f is None or not np.isfinite(f):
+            continue
+        if f <= thresh:
+            within += 1
+            if f <= heuristic:
+                beat += 1
+
+    return beat, within
 
 
 # ==============================================================
@@ -1182,14 +1230,15 @@ class r0843621:
         - Mixed initialization (greedy + random)
         - Tournament selection
         - Order crossover (OX)
-        - Weighted mutation operators
+        - Weighted mutation operators (swap, inversion, insertion)
         - Deterministic crowding survivor selection
-        - Combined local search (2-opt + Or-opt)
+        - Or-opt local search
     """
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
-        self.last_injection_gen = -(10**9)
+        self.best_overall: Optional[Individual] = None
+        self.stall_gens: int = 0
 
     def optimize(self, filename: str) -> int:
         """Main optimization routine."""
@@ -1209,14 +1258,14 @@ class r0843621:
 
         # Evolution loop
         print_section("EVOLUTION")
-        for generation in range(0, GA.GENERATIONS):
+        for generation in range(GA.GENERATIONS):
             # Evolve
             offspring = self._evolve_one_generation(population, problem)
             population = elimination_with_crowding(
                 population, offspring, GA.POPULATION_SIZE
             )
 
-            # Local search & Track best
+            # Track best and apply local search
             gen_best = min(population, key=lambda x: x.fitness)
             self._process_best_solution(gen_best, problem, generation)
 
@@ -1277,8 +1326,6 @@ class r0843621:
                 )
 
             mutation(child)
-
-            # Evaluate
             child.evaluate(problem)
 
             # Only keep valid offspring
@@ -1300,8 +1347,8 @@ class r0843621:
 
     def _process_best_solution(
         self, gen_best: Individual, problem: TravelingSalesmanProblem, generation: int
-    ):
-        """Update global best and apply local search improvement."""
+    ) -> None:
+        """Update global best and apply local search if improved."""
         # Check if this is a new best
         if gen_best.fitness < self.best_overall.fitness - 1e-9:
             if GA.USE_OR_OPT:
@@ -1330,7 +1377,7 @@ class r0843621:
     def _apply_local_search_top_k(
         self, population: List[Individual], problem: TravelingSalesmanProblem
     ) -> None:
-        """Apply local search to the top-K individuals (in-place improvements)."""
+        """Apply local search to the top-K individuals in-place."""
         if not GA.USE_OR_OPT:
             return
 
@@ -1340,7 +1387,7 @@ class r0843621:
         for idx in range(k):
             ind = pop_sorted[idx]
 
-            # work on a copy so we only accept improvements
+            # Work on a copy to only accept improvements
             cand = Individual(tour=np.copy(ind.tour), mutation_rate=ind.mutation_rate)
             cand.fitness = ind.fitness
 
@@ -1349,6 +1396,7 @@ class r0843621:
             if improvement > 1e-9 and cand.fitness < ind.fitness:
                 ind.tour = cand.tour.copy()
                 ind.fitness = cand.fitness
+                self.stall_gens = 0
 
     def _log_progress(
         self,
@@ -1376,7 +1424,7 @@ class r0843621:
 
     def _final_report(
         self, generation: int, population: List[Individual], start_time: float
-    ):
+    ) -> None:
         """Print final optimization summary."""
         total_time = time.perf_counter() - start_time
         print_section("RESULTS")
@@ -1390,35 +1438,16 @@ class r0843621:
         )
 
     def _log_top5_except_best(self, population: List[Individual]) -> None:
-        """Log ranks 2..6 (top 5 excluding the best)."""
+        """Log ranks 2-6 fitness values (debugging helper)."""
         pop_sorted = sorted(population, key=lambda ind: ind.fitness)
         if len(pop_sorted) < 2:
             return
 
         best = pop_sorted[0].fitness
-        upto = min(6, len(pop_sorted))  # ranks 1..6 exist -> print 2..upto
+        upto = min(6, len(pop_sorted))
 
         logger.info("    Top-5 (excluding #1):")
         for rank in range(2, upto + 1):
             f = pop_sorted[rank - 1].fitness
             gap = f - best
             logger.info(f"      #{rank:>2}: {f:12.2f}  (gap +{gap:10.2f})")
-
-
-def count_vs_heuristic(
-    population: List[Individual], heuristic: float, within_pct: float = 0.15
-) -> Tuple[int, int]:
-    beat = 0
-    within = 0
-    thresh = (1.0 + within_pct) * heuristic
-
-    for ind in population:
-        f = ind.fitness
-        if f is None or not np.isfinite(f):
-            continue
-        if f <= thresh:
-            within += 1
-            if f <= heuristic:
-                beat += 1
-
-    return beat, within
