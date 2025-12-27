@@ -54,7 +54,7 @@ class GAParams:
     GENERATIONS: int = 10_000_000
 
     # Selection Parameters
-    TOURNAMENT_K: int = 5  # Tournament size (larger = more selective)
+    TOURNAMENT_K: int = 2  # Tournament size (larger = more selective)
 
     # Mutation Parameters
     MUTATION_ALPHA_MIN: float = 0.08
@@ -70,18 +70,38 @@ class GAParams:
     # Logging Parameters
     LOG_INTERVAL: int = 100
 
+    # Stopping / stagnation
+    STALL_LIMIT: int = 5000
+
     # Penalty for missing edges (Inf)
     USE_PENALTY_FOR_INF: bool = True
     INF_PENALTY_FACTOR: float = 10
-
-    # Candidate list (0 to disable)
-    CANDIDATE_LIST_SIZE: int = 0
 
     # Local Search Parameters
     USE_TWO_OPT: bool = True  # Enable / disable 2-opt local search
     TWO_OPT_MAX_ITERS: int = 200  # Max iterations when enabled
     TWO_OPT_FIND_BEST: bool = True  # True = best improvement, False = first improvement
     SPARSITY_THRESHOLD: float = 0.10  # Skip 2-opt if >10% edges are infinite
+
+    # HEURISTIC = 140149  # <-- set this manually
+    HEURISTIC = 140149  # <-- set this manually
+
+        # 15665
+        # 87874
+        # 119458
+        # 140149
+        # 70468
+    HEUR_WITHIN_PCT = 0.15
+
+    STAGNATION_START: int = 500      # wait this long with no improvement
+    STAGNATION_REPEAT: int = 50      # then inject every N gens
+    IMMIGRANT_FRACTION: float = 0.8  # replace worst 25%
+    IMMIGRANT_GREEDY_FRACTION: float = 0.10  # of immigrants
+    KEEP_ELITES: int = 2  # never replace best K
+
+    DIVERSITY_MIN: float = 0.08        # 4%
+    DIVERSITY_COOLDOWN: int = 200      # minimum gens between injections
+
 
 GA = GAParams()
 
@@ -140,7 +160,6 @@ class TravelingSalesmanProblem:
         # Penalized matrix: replace Inf edges with large penalty
         self.penalized_matrix = self._build_penalized_matrix(distance_matrix)
 
-
     def _is_sparse_matrix(self, distance_matrix: np.ndarray) -> bool:
         """
         Detect if distance matrix represents a sparse graph.
@@ -156,49 +175,23 @@ class TravelingSalesmanProblem:
         total = n * (n - 1)
         sparsity = inf_count / total if total else 0.0
 
-
         return sparsity > GA.SPARSITY_THRESHOLD
 
     def _build_penalized_matrix(self, distance_matrix: np.ndarray) -> np.ndarray:
-        """Build distance matrix with penalties for missing edges."""
+        """Build distance matrix with penalties for missing edges (Inf)."""
         penalized = distance_matrix.copy()
 
         if not GA.USE_PENALTY_FOR_INF or not np.isinf(distance_matrix).any():
             return penalized
 
-        # Calculate penalty value
         finite_mask = np.isfinite(distance_matrix)
         max_finite = (
             float(np.max(distance_matrix[finite_mask])) if finite_mask.any() else 1.0
         )
         penalty = (max_finite + 1.0) * GA.INF_PENALTY_FACTOR
 
-        # Apply candidate list if configured
-        if GA.CANDIDATE_LIST_SIZE > 0:
-            n = self.num_cities
-            candidate_mask = np.zeros((n, n), dtype=bool)
-
-            for i in range(n):
-                candidate_mask[i, i] = True
-                row = distance_matrix[i]
-                finite_indices = np.where(np.isfinite(row))[0]
-                finite_indices = finite_indices[finite_indices != i]
-
-                if GA.CANDIDATE_LIST_SIZE < len(finite_indices):
-                    partition_indices = np.argpartition(
-                        row[finite_indices], GA.CANDIDATE_LIST_SIZE
-                    )[: GA.CANDIDATE_LIST_SIZE]
-                    nearest = finite_indices[partition_indices]
-                else:
-                    nearest = finite_indices
-
-                candidate_mask[i, nearest] = True
-
-            penalized[~candidate_mask] = penalty
-            penalized[~np.isfinite(penalized)] = penalty
-        else:
-            # No candidate list: penalize all missing edges
-            penalized[~finite_mask] = penalty
+        # Penalize all missing edges
+        penalized[~finite_mask] = penalty
 
         return penalized
 
@@ -553,7 +546,6 @@ def elimination_with_crowding(
     survivors.sort(key=lambda ind: ind.fitness)
     survivors = survivors[:population_size]
 
-    # Build successor matrix for fast overlap computation
     pop_succs = np.empty((len(survivors), survivors[0].tour.shape[0]), dtype=np.int32)
     pop_fits = np.empty(len(survivors), dtype=np.float64)
 
@@ -563,7 +555,7 @@ def elimination_with_crowding(
 
     # Process each offspring
     for child in offspring:
-        if child.fitness is None:
+        if child.fitness is None or not np.isfinite(child.fitness):
             continue
 
         child_succ = build_successor(child.tour)
@@ -647,7 +639,7 @@ def two_opt_local_search(
     """
     Apply 2-opt local search: remove two edges and reconnect.
     Continues until no improving move found or max iterations reached.
-    
+
     Args:
         find_best: If True, finds best improvement each iteration (slower but better quality).
                    If False, applies first improvement found (faster).
@@ -689,7 +681,7 @@ def find_first_2opt_improvement(
     Returns (i, j) for improvement, or (-1, -1) if none found.
     """
     n = tour.shape[0]
-    
+
     best_i, best_j = -1, -1
     best_improvement = 0.0
 
@@ -714,7 +706,7 @@ def find_first_2opt_improvement(
                 improvement = 1e10  # Large improvement for inf edges
             else:
                 improvement = cost_removed - cost_added
-            
+
             if improvement > 1e-9:
                 if not find_best:
                     return i, j  # Return first improvement
@@ -723,6 +715,7 @@ def find_first_2opt_improvement(
                     best_i, best_j = i, j
 
     return best_i, best_j
+
 
 # ==============================================================
 # DIVERSITY MEASUREMENT (for logging)
@@ -766,6 +759,7 @@ class r0843621:
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
+        self.last_injection_gen = -10**9
 
     def optimize(self, filename: str) -> int:
         """Main optimization routine."""
@@ -796,6 +790,29 @@ class r0843621:
             gen_best = min(population, key=lambda x: x.fitness)
             self._process_best_solution(gen_best, problem, generation)
 
+            # if(generation % 100 == 0):
+            #     div = edge_diversity(population)
+
+            # # Stagnation-triggered injections (your existing logic)
+            # if self.stall_gens >= GA.STAGNATION_START:
+            #     if (self.stall_gens - GA.STAGNATION_START) % GA.STAGNATION_REPEAT == 0:
+            #         if generation - self.last_injection_gen >= GA.DIVERSITY_COOLDOWN:
+            #             logger.info(
+            #                 f"Stagnation {self.stall_gens} gens → injecting immigrants"
+            #             )
+            #             inject_immigrants(population, problem)
+            #             self.last_injection_gen = generation
+
+            # # Diversity-triggered injection
+            # if div < GA.DIVERSITY_MIN:
+            #     if generation - self.last_injection_gen >= GA.DIVERSITY_COOLDOWN:
+            #         logger.info(
+            #             f"Diversity low ({div:.2%}) → injecting immigrants"
+            #         )
+            #         inject_immigrants(population, problem)
+            #         self.last_injection_gen = generation
+            #         div = 1
+
             # Logging
             if generation % GA.LOG_INTERVAL == 0:
                 checkpoint = self._log_progress(generation, population, checkpoint)
@@ -809,6 +826,12 @@ class r0843621:
                 < 0
             ):
                 logger.info("\nTime limit reached")
+                break
+
+            if self.stall_gens >= GA.STALL_LIMIT:
+                logger.info(
+                    f"\nStopping: no improvement for {GA.STALL_LIMIT} generations."
+                )
                 break
 
         self._final_report(generation, population, start_time)
@@ -903,10 +926,15 @@ class r0843621:
         elapsed = time.perf_counter() - checkpoint
         gen_best = min(population, key=lambda x: x.fitness)
         gen_mean = float(np.mean([ind.fitness for ind in population]))
+        gen_worst = max(population, key=lambda x: x.fitness)
+
+        beat, within = count_vs_heuristic(population, GA.HEURISTIC, GA.HEUR_WITHIN_PCT)
 
         logger.info(
             f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
-            f"Best: {gen_best.fitness:12.2f} │ Div: {edge_diversity(population):8.2%} │ "
+            f"Best: {gen_best.fitness:12.2f} │ Worst: {gen_worst.fitness:12.2f} │ "
+            f"Div: {edge_diversity(population):8.2%} │ "
+            f"≤H: {beat:3d} │ ≤1.15H: {within:3d} │ "
             f"Δt: {elapsed:7.2f}s │ NoImp: {self.stall_gens:4d}"
         )
         return time.perf_counter()
@@ -925,3 +953,228 @@ class r0843621:
                 "Final Diversity": edge_diversity(population),
             }
         )
+
+
+def count_vs_heuristic(
+    population: List[Individual], heuristic: float, within_pct: float = 0.15
+) -> Tuple[int, int]:
+    beat = 0
+    within = 0
+    thresh = (1.0 + within_pct) * heuristic
+
+    for ind in population:
+        f = ind.fitness
+        if f is None or not np.isfinite(f):
+            continue
+        if f <= thresh:
+            within += 1
+            if f <= heuristic:
+                beat += 1
+
+    return beat, within
+
+
+# def inject_immigrants(population: List[Individual], problem: TravelingSalesmanProblem) -> None:
+#     """Inject immigrants via strong perturbation of elites."""
+#     pop = sorted(population, key=lambda ind: ind.fitness)
+#     n = len(pop)
+    
+#     k_replace = max(1, int(n * GA.IMMIGRANT_FRACTION))
+#     start = max(GA.KEEP_ELITES, n - k_replace)
+#     end = n
+#     num_imm = end - start
+#     if num_imm <= 0:
+#         return
+    
+#     # Take top 20% as seeds for perturbation
+#     elite_pool_size = max(5, n // 5)
+#     elite_pool = pop[:elite_pool_size]
+    
+#     immigrants: List[Individual] = []
+#     while len(immigrants) < num_imm:
+#         # Clone a random elite
+#         seed = random.choice(elite_pool)
+#         ind = Individual(tour=np.copy(seed.tour), mutation_rate=seed.mutation_rate)
+        
+#         # Apply STRONG perturbation (multiple macro moves)
+#         num_kicks = random.randint(3, 8)  # Multiple double-bridges
+#         for _ in range(num_kicks):
+#             mutation_double_bridge(ind.tour)
+        
+#         # Optional: add small refinements
+#         for _ in range(random.randint(2, 5)):
+#             if random.random() < 0.5:
+#                 mutation_swap(ind.tour)
+#             else:
+#                 mutation_inversion(ind.tour)
+        
+#         ind.evaluate(problem)
+#         if np.isfinite(ind.fitness):
+#             immigrants.append(ind)
+    
+#     pop[start:end] = immigrants
+#     population[:] = pop
+
+
+@numba.njit(cache=True)
+def or_opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    max_chain_len: int = 3,
+) -> Tuple[int, int, int]:
+    """
+    Find best Or-opt move: relocate a chain of 1-3 cities to another position.
+    
+    Returns (start, length, insert_pos) for best move, or (-1, 0, -1) if none found.
+    More powerful than 2-opt but faster than 3-opt.
+    """
+    n = tour.shape[0]
+    best_improvement = 0.0
+    best_start = -1
+    best_length = 0
+    best_insert = -1
+    
+    # Try chains of length 1, 2, 3
+    for chain_len in range(1, min(max_chain_len + 1, n // 2)):
+        for start in range(n):
+            end = (start + chain_len - 1) % n
+            
+            # Cities involved in removal
+            before_chain = tour[(start - 1) % n]
+            after_chain = tour[(end + 1) % n]
+            first_in_chain = tour[start]
+            last_in_chain = tour[end]
+            
+            # Cost of removing the chain
+            cost_removed = (
+                distance_matrix[before_chain, first_in_chain] +
+                distance_matrix[last_in_chain, after_chain]
+            )
+            cost_bridge = distance_matrix[before_chain, after_chain]
+            
+            if not feasible[before_chain, after_chain]:
+                continue
+            
+            # Try inserting the chain at each position
+            for insert_pos in range(n):
+                # Skip invalid positions
+                if insert_pos == start or insert_pos == (start - 1) % n:
+                    continue
+                if insert_pos == end or insert_pos == (end + 1) % n:
+                    continue
+                
+                # Cities at insertion point
+                before_insert = tour[insert_pos]
+                after_insert = tour[(insert_pos + 1) % n]
+                
+                # Check feasibility
+                if not feasible[before_insert, first_in_chain]:
+                    continue
+                if not feasible[last_in_chain, after_insert]:
+                    continue
+                
+                # Cost of insertion
+                cost_removed_at_insert = distance_matrix[before_insert, after_insert]
+                cost_added_at_insert = (
+                    distance_matrix[before_insert, first_in_chain] +
+                    distance_matrix[last_in_chain, after_insert]
+                )
+                
+                # Total improvement
+                if np.isinf(cost_removed):
+                    improvement = 1e10  # Huge improvement for inf edges
+                else:
+                    improvement = (
+                        cost_removed + cost_removed_at_insert -
+                        cost_bridge - cost_added_at_insert
+                    )
+                
+                if improvement > best_improvement + 1e-9:
+                    best_improvement = improvement
+                    best_start = start
+                    best_length = chain_len
+                    best_insert = insert_pos
+    
+    return best_start, best_length, best_insert
+
+
+@numba.njit(cache=True)
+def apply_or_opt_move(tour: np.ndarray, start: int, length: int, insert_pos: int) -> np.ndarray:
+    """Apply an Or-opt move: extract chain and reinsert it."""
+    n = tour.shape[0]
+    new_tour = np.empty(n, dtype=np.int32)
+    
+    # Extract the chain
+    chain = np.empty(length, dtype=np.int32)
+    for i in range(length):
+        chain[i] = tour[(start + i) % n]
+    
+    # Build new tour
+    pos = 0
+    for i in range(n):
+        # Skip the original chain position
+        if i >= start and i < start + length:
+            continue
+        
+        new_tour[pos] = tour[i]
+        pos += 1
+        
+        # Insert chain after insert_pos
+        if i == insert_pos:
+            for j in range(length):
+                new_tour[pos] = chain[j]
+                pos += 1
+    
+    return new_tour
+
+
+def or_opt_local_search(
+    individual,
+    problem,
+    max_iters: int = 50,
+) -> None:
+    """Apply Or-opt local search until no improvement found."""
+    tour = individual.tour
+    distance_matrix = problem.distance_matrix
+    feasible = problem.feasible
+    
+    iteration = 0
+    improved = True
+    
+    while iteration < max_iters and improved:
+        iteration += 1
+        improved = False
+        
+        start, length, insert_pos = or_opt_improvement(
+            tour, distance_matrix, feasible, max_chain_len=3
+        )
+        
+        if start != -1:
+            # Apply the move
+            tour[:] = apply_or_opt_move(tour, start, length, insert_pos)
+            improved = True
+    
+    individual.evaluate(problem)
+
+def combined_local_search(individual, problem):
+    """
+    Apply multiple local search operators in sequence.
+    More effective than any single operator alone.
+    """
+    if problem.is_sparse:
+        return  # Skip on sparse graphs
+    
+    before = individual.fitness
+    
+    # 1. Quick 2-opt pass (fast, finds simple improvements)
+    two_opt_local_search(individual, problem, max_iters=100, find_best=False)
+    
+    # 2. Or-opt (finds chain relocations)
+    or_opt_local_search(individual, problem, max_iters=30)
+    
+    # 3. Final 2-opt cleanup (fix any new crossings introduced)
+    two_opt_local_search(individual, problem, max_iters=50, find_best=True)
+    
+    improvement = before - individual.fitness
+    return improvement
