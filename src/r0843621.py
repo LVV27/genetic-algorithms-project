@@ -64,11 +64,11 @@ class GAParams:
     CROSSOVER_PROB: float = 1
 
     # Initialization Parameters
-    GREEDY_FRACTION: float = 0.01  # Fraction of population initialized with greedy
+    GREEDY_FRACTION: float = 0.05  # Fraction of population initialized with greedy
     GREEDY_ATTEMPTS_MULTIPLIER: int = 500  # Try this many greedy starts per target slot
 
     # Logging Parameters
-    LOG_INTERVAL: int = 100
+    LOG_INTERVAL: int = 10
 
     # Stopping / stagnation
     STALL_LIMIT: int = 5000
@@ -78,29 +78,38 @@ class GAParams:
     INF_PENALTY_FACTOR: float = 10
 
     # Local Search Parameters
-    USE_TWO_OPT: bool = True  # Enable / disable 2-opt local search
-    TWO_OPT_MAX_ITERS: int = 200  # Max iterations when enabled
+    USE_TWO_OPT: bool = False  # Enable / disable 2-opt local search
+    TWO_OPT_MAX_ITERS: int = 100  # Max iterations when enabled
     TWO_OPT_FIND_BEST: bool = True  # True = best improvement, False = first improvement
-    SPARSITY_THRESHOLD: float = 0.10  # Skip 2-opt if >10% edges are infinite
 
-    # HEURISTIC = 140149  # <-- set this manually
-    HEURISTIC = 140149  # <-- set this manually
+    USE_OR_OPT: bool = True  # Enable / disable Or-opt local search
+    OR_OPT_MAX_ITERS: int = 200  # Max iterations for Or-opt
+    OR_OPT_MAX_CHAIN_LEN: int = 5  # Maximum chain length (1-3)
 
-        # 15665
-        # 87874
-        # 119458
-        # 140149
-        # 70468
+    # Combined local search settings
+    USE_COMBINED_LS: bool = (
+        True  # Use multi-stage local search (2-opt + Or-opt + 2-opt)
+    )
+    LS_FINAL_2OPT_ITERS: int = 50  # Final cleanup 2-opt iterations
+
+    SPARSITY_THRESHOLD: float = 0.10  # Skip local search if >10% edges are infinite
+
+    HEURISTIC = 140149  # <-- set this manually based on instance
     HEUR_WITHIN_PCT = 0.15
 
-    STAGNATION_START: int = 500      # wait this long with no improvement
-    STAGNATION_REPEAT: int = 50      # then inject every N gens
-    IMMIGRANT_FRACTION: float = 0.8  # replace worst 25%
+    STAGNATION_START: int = 500  # wait this long with no improvement
+    STAGNATION_REPEAT: int = 50  # then inject every N gens
+    IMMIGRANT_FRACTION: float = 0.8  # replace worst 80%
     IMMIGRANT_GREEDY_FRACTION: float = 0.10  # of immigrants
     KEEP_ELITES: int = 2  # never replace best K
 
-    DIVERSITY_MIN: float = 0.08        # 4%
-    DIVERSITY_COOLDOWN: int = 200      # minimum gens between injections
+    DIVERSITY_MIN: float = 0.08  # 8%
+    DIVERSITY_COOLDOWN: int = 200  # minimum gens between injections
+
+    # Local search scheduling (GA-driven)
+    LS_INTERVAL: int = 50  # apply LS every N generations
+    LS_TOP_K: int = 5  # apply LS to top K individuals
+    LS_MODE: int = 1  # 0=first improvement, 1=best improvement for 2-opt
 
 
 GA = GAParams()
@@ -634,87 +643,302 @@ def two_opt_local_search(
     individual: Individual,
     problem: TravelingSalesmanProblem,
     max_iters: int = 5,
-    find_best: bool = False,
-) -> Individual:
-    """
-    Apply 2-opt local search: remove two edges and reconnect.
-    Continues until no improving move found or max iterations reached.
+    mode: int = 0,  # 0 first, 1 best
+) -> Tuple[float, int]:
+    if individual.fitness is None:
+        individual.evaluate(problem)
 
-    Args:
-        find_best: If True, finds best improvement each iteration (slower but better quality).
-                   If False, applies first improvement found (faster).
-    """
+    before = float(individual.fitness)
     tour = individual.tour
     distance_matrix = problem.distance_matrix
     feasible = problem.feasible
 
+    moves = 0
+    it = 0
+    while it < max_iters:
+        it += 1
+        i, j = find_2opt_improvement(tour, distance_matrix, feasible, mode=mode)
+        if i == -1:
+            break
+        tour[i : j + 1] = tour[i : j + 1][::-1]
+        moves += 1
+
+    individual.evaluate(problem)
+    after = float(individual.fitness)
+    return before - after, moves
+
+
+def or_opt_local_search(
+    individual: Individual,
+    problem: TravelingSalesmanProblem,
+    max_iters: int = 30,
+) -> Tuple[float, int]:
     if individual.fitness is None:
         individual.evaluate(problem)
 
+    before = float(individual.fitness)
+
+    tour = individual.tour
+    distance_matrix = problem.distance_matrix
+    feasible = problem.feasible
+
+    moves = 0
     iteration = 0
+    improved = True
 
-    while iteration < max_iters:
+    while iteration < max_iters and improved:
         iteration += 1
+        improved = False
 
-        i, j = find_first_2opt_improvement(tour, distance_matrix, feasible, find_best)
+        start, length, insert_after_city = or_opt_improvement(
+            tour, distance_matrix, feasible, max_chain_len=GA.OR_OPT_MAX_CHAIN_LEN
+        )
 
-        if i == -1:
-            break  # Local optimum reached
-
-        tour[i : j + 1] = tour[i : j + 1][::-1]
+        if start != -1:
+            tour[:] = apply_or_opt_move(tour, start, length, insert_after_city)
+            improved = True
+            moves += 1
 
     individual.evaluate(problem)
-    return individual
+    after = float(individual.fitness)
+    return before - after, moves
 
 
 @numba.njit(cache=True)
-def find_first_2opt_improvement(
+def find_2opt_improvement(
     tour: np.ndarray,
     distance_matrix: np.ndarray,
     feasible: np.ndarray,
-    find_best: bool = False,
+    mode: int = 0,  # 0 = first improvement, 1 = best improvement
 ) -> Tuple[int, int]:
     """
-    Find improving 2-opt move.
-    If find_best=True, searches all moves and returns best improvement.
-    If find_best=False, returns first improvement found.
-    Returns (i, j) for improvement, or (-1, -1) if none found.
+    Find an improving 2-opt move.
+    mode=0: return first improving (i, j) found (fast).
+    mode=1: return best improving (i, j) (slower).
+    Returns (-1, -1) if none found.
     """
     n = tour.shape[0]
-
-    best_i, best_j = -1, -1
+    best_i = -1
+    best_j = -1
     best_improvement = 0.0
 
     for i in range(1, n - 1):
         a = tour[i - 1]
         b = tour[i]
 
-        for j in range(i + 1, n):
-            next_j = (j + 1) % n
-            c = tour[j]
-            d = tour[next_j]
+        # Optional: if your graph is sparse, also ensure removed edges exist
+        # (otherwise cost_removed can be inf and break comparisons)
+        if not feasible[a, b]:
+            continue
 
+        for j in range(i + 1, n):
+            c = tour[j]
+            d = tour[(j + 1) % n]
+
+            # Ensure the new edges are feasible
             if not feasible[a, c] or not feasible[b, d]:
+                continue
+
+            # Also ensure the removed edge (c,d) exists if you're using true sparse feasibility
+            if not feasible[c, d]:
                 continue
 
             cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
             cost_added = distance_matrix[a, c] + distance_matrix[b, d]
-
-            if np.isinf(cost_removed):
-                if not find_best:
-                    return i, j
-                improvement = 1e10  # Large improvement for inf edges
-            else:
-                improvement = cost_removed - cost_added
+            improvement = cost_removed - cost_added
 
             if improvement > 1e-9:
-                if not find_best:
-                    return i, j  # Return first improvement
-                elif improvement > best_improvement:
+                if mode == 0:
+                    return i, j
+                if improvement > best_improvement:
                     best_improvement = improvement
-                    best_i, best_j = i, j
+                    best_i = i
+                    best_j = j
 
     return best_i, best_j
+
+
+# ==============================================================
+# OR-OPT LOCAL SEARCH
+# ==============================================================
+
+
+@numba.njit(cache=True)
+def or_opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    max_chain_len: int = 3,
+) -> Tuple[int, int, int]:
+    """
+    Returns (start_index, chain_len, insert_after_city)
+    where insert_after_city is the CITY id (not an index).
+    """
+    n = tour.shape[0]
+    best_improvement = 0.0
+    best_start = -1
+    best_length = 0
+    best_insert_after_city = -1
+
+    # Try chains of length 1..max_chain_len
+    for chain_len in range(1, min(max_chain_len + 1, n - 1)):
+        for start in range(n):
+            # Build a small removal mask for this chain (wrap-safe)
+            remove = np.zeros(n, dtype=np.bool_)
+            for k in range(chain_len):
+                remove[(start + k) % n] = True
+
+            end = (start + chain_len - 1) % n
+
+            before_chain = tour[(start - 1) % n]
+            after_chain = tour[(end + 1) % n]
+            first_in_chain = tour[start]
+            last_in_chain = tour[end]
+
+            # Need to be able to connect before_chain -> after_chain after removal
+            if not feasible[before_chain, after_chain]:
+                continue
+
+            cost_removed = (
+                distance_matrix[before_chain, first_in_chain]
+                + distance_matrix[last_in_chain, after_chain]
+            )
+            cost_bridge = distance_matrix[before_chain, after_chain]
+
+            # Try inserting between (insert_pos, insert_pos+1)
+            for insert_pos in range(n):
+                # before_insert and after_insert are the edge you break to insert the chain
+                if remove[insert_pos] or remove[(insert_pos + 1) % n]:
+                    continue  # don't insert "inside" or adjacent to the removed chain
+
+                before_insert = tour[insert_pos]
+                after_insert = tour[(insert_pos + 1) % n]
+
+                if not feasible[before_insert, first_in_chain]:
+                    continue
+                if not feasible[last_in_chain, after_insert]:
+                    continue
+
+                cost_removed_at_insert = distance_matrix[before_insert, after_insert]
+                cost_added_at_insert = (
+                    distance_matrix[before_insert, first_in_chain]
+                    + distance_matrix[last_in_chain, after_insert]
+                )
+
+                if np.isinf(cost_removed):
+                    improvement = 1e10
+                else:
+                    improvement = (
+                        cost_removed
+                        + cost_removed_at_insert
+                        - cost_bridge
+                        - cost_added_at_insert
+                    )
+
+                if improvement > best_improvement + 1e-9:
+                    best_improvement = improvement
+                    best_start = start
+                    best_length = chain_len
+                    best_insert_after_city = before_insert  # <-- CITY, not index
+
+    return best_start, best_length, best_insert_after_city
+
+
+@numba.njit(cache=True)
+def apply_or_opt_move(
+    tour: np.ndarray, start: int, length: int, insert_after_city: int
+) -> np.ndarray:
+    n = tour.shape[0]
+    dt = tour.dtype  # <-- keep everything consistent
+
+    # Mark which POSITIONS are removed (wrap-safe)
+    remove = np.zeros(n, dtype=np.bool_)
+    for k in range(length):
+        remove[(start + k) % n] = True
+
+    # Extract chain in order (wrap-safe)
+    chain = np.empty(length, dtype=dt)
+    for k in range(length):
+        chain[k] = tour[(start + k) % n]
+
+    # Build remaining tour (preserve order)
+    remaining = np.empty(n - length, dtype=dt)
+    r = 0
+    for i in range(n):
+        if not remove[i]:
+            remaining[r] = tour[i]
+            r += 1
+
+    # Find insertion point in remaining: after the CITY insert_after_city
+    ins_idx = -1
+    for i in range(remaining.shape[0]):
+        if remaining[i] == insert_after_city:
+            ins_idx = i
+            break
+
+    # Safety fallback (must return same dtype as other branch)
+    if ins_idx == -1:
+        return tour.copy()
+
+    # Build new tour by inserting chain AFTER ins_idx
+    new_tour = np.empty(n, dtype=dt)
+    p = 0
+    for i in range(remaining.shape[0]):
+        new_tour[p] = remaining[i]
+        p += 1
+        if i == ins_idx:
+            for k in range(length):
+                new_tour[p] = chain[k]
+                p += 1
+
+    return new_tour
+
+
+# ==============================================================
+# COMBINED LOCAL SEARCH
+# ==============================================================
+
+
+def combined_local_search(
+    individual: Individual, problem: TravelingSalesmanProblem
+) -> float:
+    if individual.fitness is None:
+        individual.evaluate(problem)
+
+    total_before = float(individual.fitness)
+    total_improvement = 0.0
+
+    # Stage 1: 2-opt
+    if GA.USE_TWO_OPT:
+        d, moves = two_opt_local_search(
+            individual, problem, max_iters=GA.TWO_OPT_MAX_ITERS, mode=GA.LS_MODE
+        )
+        if d > 1e-9:
+            logger.info(f"    LS: 2-opt improved by {d:.2f} using {moves} moves")
+        total_improvement += d
+
+    # Stage 2: Or-opt
+    if GA.USE_OR_OPT:
+        d, moves = or_opt_local_search(
+            individual, problem, max_iters=GA.OR_OPT_MAX_ITERS
+        )
+        if d > 1e-9:
+            logger.info(f"    LS: Or-opt improved by {d:.2f} using {moves} moves")
+        total_improvement += d
+
+    # Stage 3: final best 2-opt cleanup
+    if GA.USE_COMBINED_LS and GA.USE_TWO_OPT:
+        d, moves = two_opt_local_search(
+            individual, problem, max_iters=GA.LS_FINAL_2OPT_ITERS, mode=1
+        )
+        if d > 1e-9:
+            logger.info(f"    LS: final 2-opt improved by {d:.2f} using {moves} moves")
+        total_improvement += d
+
+    # sanity: improvement should match before-after
+    total_after = float(individual.fitness)
+    # (optional debug) logger.info(f"    LS total Δ = {total_before - total_after:.2f}")
+    return total_before - total_after
 
 
 # ==============================================================
@@ -755,11 +979,12 @@ class r0843621:
         - Order crossover (OX)
         - Weighted mutation operators
         - Deterministic crowding survivor selection
+        - Combined local search (2-opt + Or-opt)
     """
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
-        self.last_injection_gen = -10**9
+        self.last_injection_gen = -(10**9)
 
     def optimize(self, filename: str) -> int:
         """Main optimization routine."""
@@ -790,32 +1015,18 @@ class r0843621:
             gen_best = min(population, key=lambda x: x.fitness)
             self._process_best_solution(gen_best, problem, generation)
 
-            # if(generation % 100 == 0):
-            #     div = edge_diversity(population)
-
-            # # Stagnation-triggered injections (your existing logic)
-            # if self.stall_gens >= GA.STAGNATION_START:
-            #     if (self.stall_gens - GA.STAGNATION_START) % GA.STAGNATION_REPEAT == 0:
-            #         if generation - self.last_injection_gen >= GA.DIVERSITY_COOLDOWN:
-            #             logger.info(
-            #                 f"Stagnation {self.stall_gens} gens → injecting immigrants"
-            #             )
-            #             inject_immigrants(population, problem)
-            #             self.last_injection_gen = generation
-
-            # # Diversity-triggered injection
-            # if div < GA.DIVERSITY_MIN:
-            #     if generation - self.last_injection_gen >= GA.DIVERSITY_COOLDOWN:
-            #         logger.info(
-            #             f"Diversity low ({div:.2%}) → injecting immigrants"
-            #         )
-            #         inject_immigrants(population, problem)
-            #         self.last_injection_gen = generation
-            #         div = 1
+            if GA.LS_INTERVAL > 0 and generation % GA.LS_INTERVAL == 0:
+                self._apply_local_search_top_k(population, problem)
 
             # Logging
             if generation % GA.LOG_INTERVAL == 0:
-                checkpoint = self._log_progress(generation, population, checkpoint)
+                div = edge_diversity(population)
+                checkpoint = self._log_progress(generation, population, checkpoint, div)
+
+            if generation % GA.LOG_INTERVAL == 0:
+                div = edge_diversity(population)
+                checkpoint = self._log_progress(generation, population, checkpoint, div)
+                self._log_top5_except_best(population)
 
             # Report and check time limit
             gen_mean = float(np.mean([ind.fitness for ind in population]))
@@ -889,24 +1100,30 @@ class r0843621:
     def _process_best_solution(
         self, gen_best: Individual, problem: TravelingSalesmanProblem, generation: int
     ):
-        """Update global best and apply 2-opt improvement."""
+        """Update global best and apply local search improvement."""
         # Check if this is a new best
         if gen_best.fitness < self.best_overall.fitness - 1e-9:
-            # Only apply 2-opt on dense graphs
-            if GA.USE_TWO_OPT and not problem.is_sparse:
+            # Apply local search (only on dense graphs)
+            if GA.USE_TWO_OPT or GA.USE_OR_OPT:
                 candidate = Individual(
                     tour=np.copy(gen_best.tour), mutation_rate=gen_best.mutation_rate
                 )
                 candidate.fitness = gen_best.fitness
 
                 before = candidate.fitness
-                candidate = two_opt_local_search(
-                    candidate, problem, GA.TWO_OPT_MAX_ITERS, GA.TWO_OPT_FIND_BEST
-                )
+                improvement = combined_local_search(candidate, problem)
 
-                if candidate.fitness < before - 1e-9:
+                if improvement > 1e-9:
+                    # Determine which operators were used
+                    operators_used = []
+                    if GA.USE_TWO_OPT:
+                        operators_used.append("2-opt")
+                    if GA.USE_OR_OPT:
+                        operators_used.append("Or-opt")
+
+                    ops_str = "+".join(operators_used)
                     logger.info(
-                        f"2-opt improved best by {before - candidate.fitness:.2f} (Gen {generation})"
+                        f"{ops_str} improved best by {improvement:.2f} (Gen {generation})"
                     )
                     gen_best.tour = np.copy(candidate.tour)
                     gen_best.fitness = candidate.fitness
@@ -919,8 +1136,35 @@ class r0843621:
         else:
             self.stall_gens += 1
 
+    def _apply_local_search_top_k(
+        self, population: List[Individual], problem: TravelingSalesmanProblem
+    ) -> None:
+        """Apply local search to the top-K individuals (in-place improvements)."""
+        if not (GA.USE_TWO_OPT or GA.USE_OR_OPT):
+            return
+
+        pop_sorted = sorted(population, key=lambda ind: ind.fitness)
+        k = min(GA.LS_TOP_K, len(pop_sorted))
+
+        for idx in range(k):
+            ind = pop_sorted[idx]
+
+            # work on a copy so we only accept improvements
+            cand = Individual(tour=np.copy(ind.tour), mutation_rate=ind.mutation_rate)
+            cand.fitness = ind.fitness
+
+            improvement = combined_local_search(cand, problem)
+
+            if improvement > 1e-9 and cand.fitness < ind.fitness:
+                ind.tour = cand.tour.copy()
+                ind.fitness = cand.fitness
+
     def _log_progress(
-        self, generation: int, population: List[Individual], checkpoint: float
+        self,
+        generation: int,
+        population: List[Individual],
+        checkpoint: float,
+        div: float,
     ) -> float:
         """Log generation statistics."""
         elapsed = time.perf_counter() - checkpoint
@@ -933,7 +1177,7 @@ class r0843621:
         logger.info(
             f"  Gen {generation:4d} │ Mean: {gen_mean:12.2f} │ "
             f"Best: {gen_best.fitness:12.2f} │ Worst: {gen_worst.fitness:12.2f} │ "
-            f"Div: {edge_diversity(population):8.2%} │ "
+            f"Div: {div:8.2%} │ "
             f"≤H: {beat:3d} │ ≤1.15H: {within:3d} │ "
             f"Δt: {elapsed:7.2f}s │ NoImp: {self.stall_gens:4d}"
         )
@@ -954,6 +1198,21 @@ class r0843621:
             }
         )
 
+    def _log_top5_except_best(self, population: List[Individual]) -> None:
+        """Log ranks 2..6 (top 5 excluding the best)."""
+        pop_sorted = sorted(population, key=lambda ind: ind.fitness)
+        if len(pop_sorted) < 2:
+            return
+
+        best = pop_sorted[0].fitness
+        upto = min(6, len(pop_sorted))  # ranks 1..6 exist -> print 2..upto
+
+        logger.info("    Top-5 (excluding #1):")
+        for rank in range(2, upto + 1):
+            f = pop_sorted[rank - 1].fitness
+            gap = f - best
+            logger.info(f"      #{rank:>2}: {f:12.2f}  (gap +{gap:10.2f})")
+
 
 def count_vs_heuristic(
     population: List[Individual], heuristic: float, within_pct: float = 0.15
@@ -972,209 +1231,3 @@ def count_vs_heuristic(
                 beat += 1
 
     return beat, within
-
-
-# def inject_immigrants(population: List[Individual], problem: TravelingSalesmanProblem) -> None:
-#     """Inject immigrants via strong perturbation of elites."""
-#     pop = sorted(population, key=lambda ind: ind.fitness)
-#     n = len(pop)
-    
-#     k_replace = max(1, int(n * GA.IMMIGRANT_FRACTION))
-#     start = max(GA.KEEP_ELITES, n - k_replace)
-#     end = n
-#     num_imm = end - start
-#     if num_imm <= 0:
-#         return
-    
-#     # Take top 20% as seeds for perturbation
-#     elite_pool_size = max(5, n // 5)
-#     elite_pool = pop[:elite_pool_size]
-    
-#     immigrants: List[Individual] = []
-#     while len(immigrants) < num_imm:
-#         # Clone a random elite
-#         seed = random.choice(elite_pool)
-#         ind = Individual(tour=np.copy(seed.tour), mutation_rate=seed.mutation_rate)
-        
-#         # Apply STRONG perturbation (multiple macro moves)
-#         num_kicks = random.randint(3, 8)  # Multiple double-bridges
-#         for _ in range(num_kicks):
-#             mutation_double_bridge(ind.tour)
-        
-#         # Optional: add small refinements
-#         for _ in range(random.randint(2, 5)):
-#             if random.random() < 0.5:
-#                 mutation_swap(ind.tour)
-#             else:
-#                 mutation_inversion(ind.tour)
-        
-#         ind.evaluate(problem)
-#         if np.isfinite(ind.fitness):
-#             immigrants.append(ind)
-    
-#     pop[start:end] = immigrants
-#     population[:] = pop
-
-
-@numba.njit(cache=True)
-def or_opt_improvement(
-    tour: np.ndarray,
-    distance_matrix: np.ndarray,
-    feasible: np.ndarray,
-    max_chain_len: int = 3,
-) -> Tuple[int, int, int]:
-    """
-    Find best Or-opt move: relocate a chain of 1-3 cities to another position.
-    
-    Returns (start, length, insert_pos) for best move, or (-1, 0, -1) if none found.
-    More powerful than 2-opt but faster than 3-opt.
-    """
-    n = tour.shape[0]
-    best_improvement = 0.0
-    best_start = -1
-    best_length = 0
-    best_insert = -1
-    
-    # Try chains of length 1, 2, 3
-    for chain_len in range(1, min(max_chain_len + 1, n // 2)):
-        for start in range(n):
-            end = (start + chain_len - 1) % n
-            
-            # Cities involved in removal
-            before_chain = tour[(start - 1) % n]
-            after_chain = tour[(end + 1) % n]
-            first_in_chain = tour[start]
-            last_in_chain = tour[end]
-            
-            # Cost of removing the chain
-            cost_removed = (
-                distance_matrix[before_chain, first_in_chain] +
-                distance_matrix[last_in_chain, after_chain]
-            )
-            cost_bridge = distance_matrix[before_chain, after_chain]
-            
-            if not feasible[before_chain, after_chain]:
-                continue
-            
-            # Try inserting the chain at each position
-            for insert_pos in range(n):
-                # Skip invalid positions
-                if insert_pos == start or insert_pos == (start - 1) % n:
-                    continue
-                if insert_pos == end or insert_pos == (end + 1) % n:
-                    continue
-                
-                # Cities at insertion point
-                before_insert = tour[insert_pos]
-                after_insert = tour[(insert_pos + 1) % n]
-                
-                # Check feasibility
-                if not feasible[before_insert, first_in_chain]:
-                    continue
-                if not feasible[last_in_chain, after_insert]:
-                    continue
-                
-                # Cost of insertion
-                cost_removed_at_insert = distance_matrix[before_insert, after_insert]
-                cost_added_at_insert = (
-                    distance_matrix[before_insert, first_in_chain] +
-                    distance_matrix[last_in_chain, after_insert]
-                )
-                
-                # Total improvement
-                if np.isinf(cost_removed):
-                    improvement = 1e10  # Huge improvement for inf edges
-                else:
-                    improvement = (
-                        cost_removed + cost_removed_at_insert -
-                        cost_bridge - cost_added_at_insert
-                    )
-                
-                if improvement > best_improvement + 1e-9:
-                    best_improvement = improvement
-                    best_start = start
-                    best_length = chain_len
-                    best_insert = insert_pos
-    
-    return best_start, best_length, best_insert
-
-
-@numba.njit(cache=True)
-def apply_or_opt_move(tour: np.ndarray, start: int, length: int, insert_pos: int) -> np.ndarray:
-    """Apply an Or-opt move: extract chain and reinsert it."""
-    n = tour.shape[0]
-    new_tour = np.empty(n, dtype=np.int32)
-    
-    # Extract the chain
-    chain = np.empty(length, dtype=np.int32)
-    for i in range(length):
-        chain[i] = tour[(start + i) % n]
-    
-    # Build new tour
-    pos = 0
-    for i in range(n):
-        # Skip the original chain position
-        if i >= start and i < start + length:
-            continue
-        
-        new_tour[pos] = tour[i]
-        pos += 1
-        
-        # Insert chain after insert_pos
-        if i == insert_pos:
-            for j in range(length):
-                new_tour[pos] = chain[j]
-                pos += 1
-    
-    return new_tour
-
-
-def or_opt_local_search(
-    individual,
-    problem,
-    max_iters: int = 50,
-) -> None:
-    """Apply Or-opt local search until no improvement found."""
-    tour = individual.tour
-    distance_matrix = problem.distance_matrix
-    feasible = problem.feasible
-    
-    iteration = 0
-    improved = True
-    
-    while iteration < max_iters and improved:
-        iteration += 1
-        improved = False
-        
-        start, length, insert_pos = or_opt_improvement(
-            tour, distance_matrix, feasible, max_chain_len=3
-        )
-        
-        if start != -1:
-            # Apply the move
-            tour[:] = apply_or_opt_move(tour, start, length, insert_pos)
-            improved = True
-    
-    individual.evaluate(problem)
-
-def combined_local_search(individual, problem):
-    """
-    Apply multiple local search operators in sequence.
-    More effective than any single operator alone.
-    """
-    if problem.is_sparse:
-        return  # Skip on sparse graphs
-    
-    before = individual.fitness
-    
-    # 1. Quick 2-opt pass (fast, finds simple improvements)
-    two_opt_local_search(individual, problem, max_iters=100, find_best=False)
-    
-    # 2. Or-opt (finds chain relocations)
-    or_opt_local_search(individual, problem, max_iters=30)
-    
-    # 3. Final 2-opt cleanup (fix any new crossings introduced)
-    two_opt_local_search(individual, problem, max_iters=50, find_best=True)
-    
-    improvement = before - individual.fitness
-    return improvement
