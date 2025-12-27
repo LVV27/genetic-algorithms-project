@@ -94,23 +94,14 @@ class GAParams:
     INF_PENALTY_FACTOR: float = 10
 
     # ==========================================================
-    # LOCAL SEARCH OPERATORS (2-opt, Or-opt, Combined)
+    # LOCAL SEARCH OPERATORS (Or-opt)
     # ==========================================================
-    USE_TWO_OPT: bool = False  # Enable / disable 2-opt local search
-    TWO_OPT_MAX_ITERS: int = 100  # Max iterations when enabled
-    TWO_OPT_FIND_BEST: bool = True  # True = best improvement, False = first improvement
-
     USE_OR_OPT: bool = True  # Enable / disable Or-opt local search
     OR_OPT_MAX_ITERS: int = 10  # Max iterations for Or-opt
-    OR_OPT_MAX_CHAIN_LEN: int = 3  # Maximum chain length (1-3)
-
-    USE_COMBINED_LS: bool = (
-        False  # Use multi-stage local search (2-opt + Or-opt + 2-opt)
-    )
-    LS_FINAL_2OPT_ITERS: int = 50  # Final cleanup 2-opt iterations
+    OR_OPT_MAX_CHAIN_LEN: int = 7  # Maximum chain length (1-3)
 
     # Local search scheduling (GA-driven)
-    LS_INTERVAL: int = 50  # apply LS every N generations
+    LS_INTERVAL: int = 100  # apply LS every N generations
     LS_TOP_K: int = 1  # apply LS to top K individuals
     LS_MODE: int = 1  # 0=first improvement, 1=best improvement for 2-opt
 
@@ -123,7 +114,7 @@ class GAParams:
     # ==========================================================
     # BENCHMARK / REFERENCE TARGETS
     # ==========================================================
-    HEURISTIC = 140149  # <-- set this manually based on instance
+    HEURISTIC = 72418.75  # todo automatic please
     HEUR_WITHIN_PCT = 0.15
 
     # ==========================================================
@@ -796,37 +787,8 @@ def best_rival_index_by_edge_overlap_numba(
 
 
 # ==============================================================
-# 2-OPT LOCAL SEARCH
+# OR-OPT LOCAL SEARCH
 # ==============================================================
-
-
-def two_opt_local_search(
-    individual: Individual,
-    problem: TravelingSalesmanProblem,
-    max_iters: int = 5,
-    mode: int = 0,  # 0 first, 1 best
-) -> Tuple[float, int]:
-    if individual.fitness is None:
-        individual.evaluate(problem)
-
-    before = float(individual.fitness)
-    tour = individual.tour
-    distance_matrix = problem.distance_matrix
-    feasible = problem.feasible
-
-    moves = 0
-    it = 0
-    while it < max_iters:
-        it += 1
-        i, j = find_2opt_improvement(tour, distance_matrix, feasible, mode=mode)
-        if i == -1:
-            break
-        tour[i : j + 1] = tour[i : j + 1][::-1]
-        moves += 1
-
-    individual.evaluate(problem)
-    after = float(individual.fitness)
-    return before - after, moves
 
 
 def or_opt_local_search(
@@ -863,131 +825,6 @@ def or_opt_local_search(
     individual.evaluate(problem)
     after = float(individual.fitness)
     return before - after, moves
-
-
-def find_2opt_improvement(
-    tour: np.ndarray,
-    distance_matrix: np.ndarray,
-    feasible: np.ndarray,
-    mode: int = 0,
-) -> Tuple[int, int]:
-    return (
-        find_2opt_improvement_numba(tour, distance_matrix, feasible, mode=mode)
-        if GA.USE_NUMBA
-        else find_2opt_improvement_py(tour, distance_matrix, feasible, mode=mode)
-    )
-
-
-def find_2opt_improvement_py(
-    tour: np.ndarray,
-    distance_matrix: np.ndarray,
-    feasible: np.ndarray,
-    mode: int = 0,  # 0 = first improvement, 1 = best improvement for 2-opt
-) -> Tuple[int, int]:
-    """
-    Find an improving 2-opt move.
-    mode=0: return first improving (i, j) found (fast).
-    mode=1: return best improving (i, j) (slower).
-    Returns (-1, -1) if none found.
-    """
-    n = tour.shape[0]
-    best_i = -1
-    best_j = -1
-    best_improvement = 0.0
-
-    for i in range(1, n - 1):
-        a = int(tour[i - 1])
-        b = int(tour[i])
-
-        # Optional: if your graph is sparse, also ensure removed edges exist
-        # (otherwise cost_removed can be inf and break comparisons)
-        if not feasible[a, b]:
-            continue
-
-        for j in range(i + 1, n):
-            c = int(tour[j])
-            d = int(tour[(j + 1) % n])
-
-            # Ensure the new edges are feasible
-            if not feasible[a, c] or not feasible[b, d]:
-                continue
-
-            # Also ensure the removed edge (c,d) exists if you're using true sparse feasibility
-            if not feasible[c, d]:
-                continue
-
-            cost_removed = float(distance_matrix[a, b] + distance_matrix[c, d])
-            cost_added = float(distance_matrix[a, c] + distance_matrix[b, d])
-            improvement = cost_removed - cost_added
-
-            if improvement > 1e-9:
-                if mode == 0:
-                    return i, j
-                if improvement > best_improvement:
-                    best_improvement = improvement
-                    best_i = i
-                    best_j = j
-
-    return best_i, best_j
-
-
-@numba.njit(cache=True)
-def find_2opt_improvement_numba(
-    tour: np.ndarray,
-    distance_matrix: np.ndarray,
-    feasible: np.ndarray,
-    mode: int = 0,  # 0 = first improvement, 1 = best improvement
-) -> Tuple[int, int]:
-    """
-    Find an improving 2-opt move.
-    mode=0: return first improving (i, j) found (fast).
-    mode=1: return best improving (i, j) (slower).
-    Returns (-1, -1) if none found.
-    """
-    n = tour.shape[0]
-    best_i = -1
-    best_j = -1
-    best_improvement = 0.0
-
-    for i in range(1, n - 1):
-        a = tour[i - 1]
-        b = tour[i]
-
-        # Optional: if your graph is sparse, also ensure removed edges exist
-        # (otherwise cost_removed can be inf and break comparisons)
-        if not feasible[a, b]:
-            continue
-
-        for j in range(i + 1, n):
-            c = tour[j]
-            d = tour[(j + 1) % n]
-
-            # Ensure the new edges are feasible
-            if not feasible[a, c] or not feasible[b, d]:
-                continue
-
-            # Also ensure the removed edge (c,d) exists if you're using true sparse feasibility
-            if not feasible[c, d]:
-                continue
-
-            cost_removed = distance_matrix[a, b] + distance_matrix[c, d]
-            cost_added = distance_matrix[a, c] + distance_matrix[b, d]
-            improvement = cost_removed - cost_added
-
-            if improvement > 1e-9:
-                if mode == 0:
-                    return i, j
-                if improvement > best_improvement:
-                    best_improvement = improvement
-                    best_i = i
-                    best_j = j
-
-    return best_i, best_j
-
-
-# ==============================================================
-# OR-OPT LOCAL SEARCH
-# ==============================================================
 
 
 def or_opt_improvement(
@@ -1229,6 +1066,7 @@ def apply_or_opt_move_py(
     return new_tour
 
 
+# not very computatioanlly heavy!!
 @numba.njit(cache=True)
 def apply_or_opt_move_numba(
     tour: np.ndarray, start: int, length: int, insert_after_city: int
@@ -1280,7 +1118,7 @@ def apply_or_opt_move_numba(
 
 
 # ==============================================================
-# COMBINED LOCAL SEARCH
+# COMBINED LOCAL SEARCH (just Or-Opt, 2-opt wasn't doing much)
 # ==============================================================
 
 
@@ -1291,38 +1129,16 @@ def combined_local_search(
         individual.evaluate(problem)
 
     total_before = float(individual.fitness)
-    total_improvement = 0.0
 
-    # Stage 1: 2-opt
-    if GA.USE_TWO_OPT:
-        d, moves = two_opt_local_search(
-            individual, problem, max_iters=GA.TWO_OPT_MAX_ITERS, mode=GA.LS_MODE
-        )
-        if d > 1e-9:
-            logger.info(f"    LS: 2-opt improved by {d:.2f} using {moves} moves")
-        total_improvement += d
-
-    # Stage 2: Or-opt
+    # Stage 1: Or-opt
     if GA.USE_OR_OPT:
         d, moves = or_opt_local_search(
             individual, problem, max_iters=GA.OR_OPT_MAX_ITERS
         )
         if d > 1e-9:
             logger.info(f"    LS: Or-opt improved by {d:.2f} using {moves} moves")
-        total_improvement += d
 
-    # Stage 3: final best 2-opt cleanup
-    if GA.USE_COMBINED_LS and GA.USE_TWO_OPT:
-        d, moves = two_opt_local_search(
-            individual, problem, max_iters=GA.LS_FINAL_2OPT_ITERS, mode=1
-        )
-        if d > 1e-9:
-            logger.info(f"    LS: final 2-opt improved by {d:.2f} using {moves} moves")
-        total_improvement += d
-
-    # sanity: improvement should match before-after
     total_after = float(individual.fitness)
-    # (optional debug) logger.info(f"    LS total Δ = {total_before - total_after:.2f}")
     return total_before - total_after
 
 
@@ -1484,27 +1300,17 @@ class r0843621:
         """Update global best and apply local search improvement."""
         # Check if this is a new best
         if gen_best.fitness < self.best_overall.fitness - 1e-9:
-            # Apply local search (only on dense graphs)
-            if GA.USE_TWO_OPT or GA.USE_OR_OPT:
+            if GA.USE_OR_OPT:
                 candidate = Individual(
                     tour=np.copy(gen_best.tour), mutation_rate=gen_best.mutation_rate
                 )
                 candidate.fitness = gen_best.fitness
 
-                before = candidate.fitness
                 improvement = combined_local_search(candidate, problem)
 
                 if improvement > 1e-9:
-                    # Determine which operators were used
-                    operators_used = []
-                    if GA.USE_TWO_OPT:
-                        operators_used.append("2-opt")
-                    if GA.USE_OR_OPT:
-                        operators_used.append("Or-opt")
-
-                    ops_str = "+".join(operators_used)
                     logger.info(
-                        f"{ops_str} improved best by {improvement:.2f} (Gen {generation})"
+                        f"Or-opt improved best by {improvement:.2f} (Gen {generation})"
                     )
                     gen_best.tour = np.copy(candidate.tour)
                     gen_best.fitness = candidate.fitness
@@ -1521,7 +1327,7 @@ class r0843621:
         self, population: List[Individual], problem: TravelingSalesmanProblem
     ) -> None:
         """Apply local search to the top-K individuals (in-place improvements)."""
-        if not (GA.USE_TWO_OPT or GA.USE_OR_OPT):
+        if not GA.USE_OR_OPT:
             return
 
         pop_sorted = sorted(population, key=lambda ind: ind.fitness)
