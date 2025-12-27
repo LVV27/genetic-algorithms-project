@@ -48,68 +48,89 @@ logger.propagate = False
 class GAParams:
     """Centralized configuration for the Genetic Algorithm."""
 
-    # Population Parameters
+    # ==========================================================
+    # EXECUTION / BACKEND
+    # ==========================================================
+    USE_NUMBA: bool = True
+
+    # ==========================================================
+    # POPULATION & GENERATIONAL MODEL (μ, λ)
+    # ==========================================================
     POPULATION_SIZE: int = 100  # λ
     OFFSPRING_SIZE: int = 200  # μ
     GENERATIONS: int = 10_000_000
 
-    # Selection Parameters
+    # ==========================================================
+    # INITIALIZATION OPERATOR (Greedy + Random)
+    # ==========================================================
+    GREEDY_FRACTION: float = 0.01  # Fraction of population initialized with greedy
+    GREEDY_ATTEMPTS_MULTIPLIER: int = 200  # Try this many greedy starts per target slot
+
+    # ==========================================================
+    # SELECTION OPERATOR
+    # ==========================================================
     TOURNAMENT_K: int = 2  # Tournament size (larger = more selective)
 
-    # Mutation Parameters
+    # ==========================================================
+    # CROSSOVER OPERATOR
+    # ==========================================================
+    CROSSOVER_PROB: float = 1
+
+    # ==========================================================
+    # MUTATION OPERATOR (Self-adaptive mutation rate bounds)
+    # ==========================================================
     MUTATION_ALPHA_MIN: float = 0.08
     MUTATION_ALPHA_MAX: float = 0.20
 
-    # Crossover Parameters
-    CROSSOVER_PROB: float = 1
-
-    # Initialization Parameters
-    GREEDY_FRACTION: float = 0.05  # Fraction of population initialized with greedy
-    GREEDY_ATTEMPTS_MULTIPLIER: int = 500  # Try this many greedy starts per target slot
-
-    # Logging Parameters
-    LOG_INTERVAL: int = 10
-
-    # Stopping / stagnation
+    # ==========================================================
+    # SURVIVOR SELECTION / REPLACEMENT OPERATOR
+    # ==========================================================
     STALL_LIMIT: int = 5000
 
-    # Penalty for missing edges (Inf)
+    # ==========================================================
+    # FITNESS EVALUATION / CONSTRAINT HANDLING
+    # ==========================================================
     USE_PENALTY_FOR_INF: bool = True
     INF_PENALTY_FACTOR: float = 10
 
-    # Local Search Parameters
+    # ==========================================================
+    # LOCAL SEARCH OPERATORS (2-opt, Or-opt, Combined)
+    # ==========================================================
     USE_TWO_OPT: bool = False  # Enable / disable 2-opt local search
     TWO_OPT_MAX_ITERS: int = 100  # Max iterations when enabled
     TWO_OPT_FIND_BEST: bool = True  # True = best improvement, False = first improvement
 
     USE_OR_OPT: bool = True  # Enable / disable Or-opt local search
-    OR_OPT_MAX_ITERS: int = 200  # Max iterations for Or-opt
-    OR_OPT_MAX_CHAIN_LEN: int = 5  # Maximum chain length (1-3)
+    OR_OPT_MAX_ITERS: int = 10  # Max iterations for Or-opt
+    OR_OPT_MAX_CHAIN_LEN: int = 3  # Maximum chain length (1-3)
 
-    # Combined local search settings
     USE_COMBINED_LS: bool = (
-        True  # Use multi-stage local search (2-opt + Or-opt + 2-opt)
+        False  # Use multi-stage local search (2-opt + Or-opt + 2-opt)
     )
     LS_FINAL_2OPT_ITERS: int = 50  # Final cleanup 2-opt iterations
 
-    SPARSITY_THRESHOLD: float = 0.10  # Skip local search if >10% edges are infinite
+    # Local search scheduling (GA-driven)
+    LS_INTERVAL: int = 50  # apply LS every N generations
+    LS_TOP_K: int = 1  # apply LS to top K individuals
+    LS_MODE: int = 1  # 0=first improvement, 1=best improvement for 2-opt
 
-    HEURISTIC = 140149  # <-- set this manually based on instance
-    HEUR_WITHIN_PCT = 0.15
-
-    STAGNATION_START: int = 500  # wait this long with no improvement
-    STAGNATION_REPEAT: int = 50  # then inject every N gens
-    IMMIGRANT_FRACTION: float = 0.8  # replace worst 80%
-    IMMIGRANT_GREEDY_FRACTION: float = 0.10  # of immigrants
-    KEEP_ELITES: int = 2  # never replace best K
-
+    # ==========================================================
+    # DIVERSITY CONTROL / MONITORING
+    # ==========================================================
     DIVERSITY_MIN: float = 0.08  # 8%
     DIVERSITY_COOLDOWN: int = 200  # minimum gens between injections
 
-    # Local search scheduling (GA-driven)
-    LS_INTERVAL: int = 50  # apply LS every N generations
-    LS_TOP_K: int = 5  # apply LS to top K individuals
-    LS_MODE: int = 1  # 0=first improvement, 1=best improvement for 2-opt
+    # ==========================================================
+    # BENCHMARK / REFERENCE TARGETS
+    # ==========================================================
+    HEURISTIC = 140149  # <-- set this manually based on instance
+    HEUR_WITHIN_PCT = 0.15
+
+    # ==========================================================
+    # LOGGING / REPORTING
+    # ==========================================================
+    LOG_INTERVAL: int = 10
+    SPARSITY_THRESHOLD: float = 0.10
 
 
 GA = GAParams()
@@ -264,8 +285,37 @@ class Individual:
 
     def evaluate(self, problem: TravelingSalesmanProblem) -> float:
         """Evaluate tour fitness using penalized distance matrix."""
-        self.fitness = evaluate_tour_numba(self.tour, problem.penalized_matrix)
+        self.fitness = evaluate_tour(self.tour, problem.penalized_matrix)
         return self.fitness
+
+
+def evaluate_tour(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
+    return (
+        evaluate_tour_numba(tour, distance_matrix)
+        if GA.USE_NUMBA
+        else evaluate_tour_py(tour, distance_matrix)
+    )
+
+
+def evaluate_tour_py(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
+    """
+    Compute total tour length efficiently using Python/NumPy.
+    Returns np.inf if any edge is invalid.
+    """
+    total = 0.0
+    n = tour.shape[0]
+
+    for i in range(n):
+        city_a = int(tour[i])
+        city_b = int(tour[(i + 1) % n])
+        distance = float(distance_matrix[city_a, city_b])
+
+        if np.isinf(distance):
+            return np.inf
+
+        total += distance
+
+    return total
 
 
 @numba.njit(cache=True)
@@ -296,20 +346,61 @@ def evaluate_tour_numba(tour: np.ndarray, distance_matrix: np.ndarray) -> float:
 
 
 def nearest_neighbor_greedy(
-    problem: TravelingSalesmanProblem,
-    start_city: int = 0,
+    distance_matrix: np.ndarray,
+    start_city: int,
 ) -> Optional[np.ndarray]:
-    """
-    Nearest-neighbor heuristic (Numba-accelerated).
-    Returns None if construction fails (sparse graphs).
-    """
-    tour = nearest_neighbor_greedy_numba(
-        problem.distance_matrix,
-        start_city,
+    tour = (
+        nearest_neighbor_greedy_numba(distance_matrix, start_city)
+        if GA.USE_NUMBA
+        else nearest_neighbor_greedy_py(distance_matrix, start_city)
     )
 
     if tour[0] == -1:
         return None
+
+    return tour
+
+
+def nearest_neighbor_greedy_py(
+    distance_matrix: np.ndarray,
+    start_city: int,
+) -> np.ndarray:
+    """
+    Numba-accelerated nearest neighbor construction.
+
+    Returns:
+        Tour as array, or array filled with -1 if construction fails
+    """
+    num_cities = distance_matrix.shape[0]
+    tour = np.empty(num_cities, dtype=np.int32)
+    tour[0] = start_city
+
+    visited = np.zeros(num_cities, dtype=np.bool_)
+    visited[start_city] = True
+
+    current_city = start_city
+
+    for step in range(1, num_cities):
+        best_distance = np.inf
+        best_next_city = -1
+
+        for candidate in range(num_cities):
+            if visited[candidate]:
+                continue
+
+            distance = distance_matrix[current_city, candidate]
+            if distance < best_distance:
+                best_distance = distance
+                best_next_city = candidate
+
+        # Construction failed
+        if best_next_city == -1 or np.isinf(best_distance):
+            tour[:] = -1
+            return tour
+
+        tour[step] = best_next_city
+        visited[best_next_city] = True
+        current_city = best_next_city
 
     return tour
 
@@ -387,7 +478,7 @@ def initialize_population_mixed(
     greedy_candidates: List[Individual] = []
 
     for start_city in start_cities:
-        tour = nearest_neighbor_greedy(problem, start_city)
+        tour = nearest_neighbor_greedy(problem.distance_matrix, start_city)
         if tour is None:
             continue
 
@@ -583,8 +674,26 @@ def elimination_with_crowding(
     return survivors[:population_size]
 
 
-@numba.njit(cache=True)
 def build_successor(tour: np.ndarray) -> np.ndarray:
+    return build_successor_numba(tour) if GA.USE_NUMBA else build_successor_py(tour)
+
+
+def build_successor_py(tour: np.ndarray) -> np.ndarray:
+    """
+    Build successor representation: succ[city] = next_city in tour.
+    Used for fast edge overlap computation.
+    """
+    n = tour.shape[0]
+    succ = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        a = int(tour[i])
+        b = int(tour[(i + 1) % n])
+        succ[a] = b
+    return succ
+
+
+@numba.njit(cache=True)
+def build_successor_numba(tour: np.ndarray) -> np.ndarray:
     """
     Build successor representation: succ[city] = next_city in tour.
     Used for fast edge overlap computation.
@@ -598,8 +707,60 @@ def build_successor(tour: np.ndarray) -> np.ndarray:
     return succ
 
 
-@numba.njit(cache=True)
 def best_rival_index_by_edge_overlap(
+    child_succ: np.ndarray,
+    pop_succs: np.ndarray,
+    child_fit: float,
+    pop_fits: np.ndarray,
+) -> int:
+    return (
+        best_rival_index_by_edge_overlap_numba(
+            child_succ, pop_succs, child_fit, pop_fits
+        )
+        if GA.USE_NUMBA
+        else best_rival_index_by_edge_overlap_py(
+            child_succ, pop_succs, child_fit, pop_fits
+        )
+    )
+
+
+def best_rival_index_by_edge_overlap_py(
+    child_succ: np.ndarray,
+    pop_succs: np.ndarray,
+    child_fit: float,
+    pop_fits: np.ndarray,
+) -> int:
+    """
+    Find population member with maximum directed edge overlap with child.
+    Tie-breaker: closest fitness.
+    """
+    pop_size = pop_succs.shape[0]
+    n = child_succ.shape[0]
+
+    best_idx = 0
+    best_overlap = -1
+    best_fit_diff = 1e300
+
+    for i in range(pop_size):
+        overlap = 0
+        for city in range(n):
+            if child_succ[city] == pop_succs[i, city]:
+                overlap += 1
+
+        fit_diff = abs(child_fit - float(pop_fits[i]))
+
+        if (overlap > best_overlap) or (
+            overlap == best_overlap and fit_diff < best_fit_diff
+        ):
+            best_overlap = overlap
+            best_fit_diff = fit_diff
+            best_idx = i
+
+    return best_idx
+
+
+@numba.njit(cache=True)
+def best_rival_index_by_edge_overlap_numba(
     child_succ: np.ndarray,
     pop_succs: np.ndarray,
     child_fit: float,
@@ -704,8 +865,74 @@ def or_opt_local_search(
     return before - after, moves
 
 
-@numba.njit(cache=True)
 def find_2opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    mode: int = 0,
+) -> Tuple[int, int]:
+    return (
+        find_2opt_improvement_numba(tour, distance_matrix, feasible, mode=mode)
+        if GA.USE_NUMBA
+        else find_2opt_improvement_py(tour, distance_matrix, feasible, mode=mode)
+    )
+
+
+def find_2opt_improvement_py(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    mode: int = 0,  # 0 = first improvement, 1 = best improvement for 2-opt
+) -> Tuple[int, int]:
+    """
+    Find an improving 2-opt move.
+    mode=0: return first improving (i, j) found (fast).
+    mode=1: return best improving (i, j) (slower).
+    Returns (-1, -1) if none found.
+    """
+    n = tour.shape[0]
+    best_i = -1
+    best_j = -1
+    best_improvement = 0.0
+
+    for i in range(1, n - 1):
+        a = int(tour[i - 1])
+        b = int(tour[i])
+
+        # Optional: if your graph is sparse, also ensure removed edges exist
+        # (otherwise cost_removed can be inf and break comparisons)
+        if not feasible[a, b]:
+            continue
+
+        for j in range(i + 1, n):
+            c = int(tour[j])
+            d = int(tour[(j + 1) % n])
+
+            # Ensure the new edges are feasible
+            if not feasible[a, c] or not feasible[b, d]:
+                continue
+
+            # Also ensure the removed edge (c,d) exists if you're using true sparse feasibility
+            if not feasible[c, d]:
+                continue
+
+            cost_removed = float(distance_matrix[a, b] + distance_matrix[c, d])
+            cost_added = float(distance_matrix[a, c] + distance_matrix[b, d])
+            improvement = cost_removed - cost_added
+
+            if improvement > 1e-9:
+                if mode == 0:
+                    return i, j
+                if improvement > best_improvement:
+                    best_improvement = improvement
+                    best_i = i
+                    best_j = j
+
+    return best_i, best_j
+
+
+@numba.njit(cache=True)
+def find_2opt_improvement_numba(
     tour: np.ndarray,
     distance_matrix: np.ndarray,
     feasible: np.ndarray,
@@ -763,8 +990,107 @@ def find_2opt_improvement(
 # ==============================================================
 
 
-@numba.njit(cache=True)
 def or_opt_improvement(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    max_chain_len: int = 3,
+) -> Tuple[int, int, int]:
+    return (
+        or_opt_improvement_numba(
+            tour, distance_matrix, feasible, max_chain_len=max_chain_len
+        )
+        if GA.USE_NUMBA
+        else or_opt_improvement_py(
+            tour, distance_matrix, feasible, max_chain_len=max_chain_len
+        )
+    )
+
+
+def or_opt_improvement_py(
+    tour: np.ndarray,
+    distance_matrix: np.ndarray,
+    feasible: np.ndarray,
+    max_chain_len: int = 3,
+) -> Tuple[int, int, int]:
+    """
+    Returns (start_index, chain_len, insert_after_city)
+    where insert_after_city is the CITY id (not an index).
+    """
+    n = tour.shape[0]
+    best_improvement = 0.0
+    best_start = -1
+    best_length = 0
+    best_insert_after_city = -1
+
+    # Try chains of length 1..max_chain_len
+    for chain_len in range(1, min(max_chain_len + 1, n - 1)):
+        for start in range(n):
+            # Build a small removal mask for this chain (wrap-safe)
+            remove = np.zeros(n, dtype=np.bool_)
+            for k in range(chain_len):
+                remove[(start + k) % n] = True
+
+            end = (start + chain_len - 1) % n
+
+            before_chain = int(tour[(start - 1) % n])
+            after_chain = int(tour[(end + 1) % n])
+            first_in_chain = int(tour[start])
+            last_in_chain = int(tour[end])
+
+            # Need to be able to connect before_chain -> after_chain after removal
+            if not feasible[before_chain, after_chain]:
+                continue
+
+            cost_removed = float(
+                distance_matrix[before_chain, first_in_chain]
+                + distance_matrix[last_in_chain, after_chain]
+            )
+            cost_bridge = float(distance_matrix[before_chain, after_chain])
+
+            # Try inserting between (insert_pos, insert_pos+1)
+            for insert_pos in range(n):
+                # before_insert and after_insert are the edge you break to insert the chain
+                if remove[insert_pos] or remove[(insert_pos + 1) % n]:
+                    continue  # don't insert "inside" or adjacent to the removed chain
+
+                before_insert = int(tour[insert_pos])
+                after_insert = int(tour[(insert_pos + 1) % n])
+
+                if not feasible[before_insert, first_in_chain]:
+                    continue
+                if not feasible[last_in_chain, after_insert]:
+                    continue
+
+                cost_removed_at_insert = float(
+                    distance_matrix[before_insert, after_insert]
+                )
+                cost_added_at_insert = float(
+                    distance_matrix[before_insert, first_in_chain]
+                    + distance_matrix[last_in_chain, after_insert]
+                )
+
+                if np.isinf(cost_removed):
+                    improvement = 1e10
+                else:
+                    improvement = (
+                        cost_removed
+                        + cost_removed_at_insert
+                        - cost_bridge
+                        - cost_added_at_insert
+                    )
+
+                if improvement > best_improvement + 1e-9:
+                    best_improvement = improvement
+                    best_start = start
+                    best_length = chain_len
+                    best_insert_after_city = before_insert  # <-- CITY, not index
+
+    return best_start, best_length, best_insert_after_city
+
+
+@numba.njit(cache=True)
+def or_opt_improvement_numba(
     tour: np.ndarray,
     distance_matrix: np.ndarray,
     feasible: np.ndarray,
@@ -844,8 +1170,67 @@ def or_opt_improvement(
     return best_start, best_length, best_insert_after_city
 
 
-@numba.njit(cache=True)
 def apply_or_opt_move(
+    tour: np.ndarray, start: int, length: int, insert_after_city: int
+) -> np.ndarray:
+    return (
+        apply_or_opt_move_numba(tour, start, length, insert_after_city)
+        if GA.USE_NUMBA
+        else apply_or_opt_move_py(tour, start, length, insert_after_city)
+    )
+
+
+def apply_or_opt_move_py(
+    tour: np.ndarray, start: int, length: int, insert_after_city: int
+) -> np.ndarray:
+    n = tour.shape[0]
+    dt = tour.dtype  # <-- keep everything consistent
+
+    # Mark which POSITIONS are removed (wrap-safe)
+    remove = np.zeros(n, dtype=np.bool_)
+    for k in range(length):
+        remove[(start + k) % n] = True
+
+    # Extract chain in order (wrap-safe)
+    chain = np.empty(length, dtype=dt)
+    for k in range(length):
+        chain[k] = tour[(start + k) % n]
+
+    # Build remaining tour (preserve order)
+    remaining = np.empty(n - length, dtype=dt)
+    r = 0
+    for i in range(n):
+        if not remove[i]:
+            remaining[r] = tour[i]
+            r += 1
+
+    # Find insertion point in remaining: after the CITY insert_after_city
+    ins_idx = -1
+    for i in range(remaining.shape[0]):
+        if remaining[i] == insert_after_city:
+            ins_idx = i
+            break
+
+    # Safety fallback (must return same dtype as other branch)
+    if ins_idx == -1:
+        return tour.copy()
+
+    # Build new tour by inserting chain AFTER ins_idx
+    new_tour = np.empty(n, dtype=dt)
+    p = 0
+    for i in range(remaining.shape[0]):
+        new_tour[p] = remaining[i]
+        p += 1
+        if i == ins_idx:
+            for k in range(length):
+                new_tour[p] = chain[k]
+                p += 1
+
+    return new_tour
+
+
+@numba.njit(cache=True)
+def apply_or_opt_move_numba(
     tour: np.ndarray, start: int, length: int, insert_after_city: int
 ) -> np.ndarray:
     n = tour.shape[0]
@@ -1022,11 +1407,7 @@ class r0843621:
             if generation % GA.LOG_INTERVAL == 0:
                 div = edge_diversity(population)
                 checkpoint = self._log_progress(generation, population, checkpoint, div)
-
-            if generation % GA.LOG_INTERVAL == 0:
-                div = edge_diversity(population)
-                checkpoint = self._log_progress(generation, population, checkpoint, div)
-                self._log_top5_except_best(population)
+                # self._log_top5_except_best(population)
 
             # Report and check time limit
             gen_mean = float(np.mean([ind.fitness for ind in population]))
