@@ -114,7 +114,7 @@ class GAParams:
     # ==========================================================
     # BENCHMARK / REFERENCE TARGETS
     # ==========================================================
-    HEURISTIC = 72418.75  # todo automatic please
+    HEURISTIC: Optional[float] = None  # auto-set from instance if known
     HEUR_WITHIN_PCT = 0.15
 
     # ==========================================================
@@ -180,6 +180,10 @@ class TravelingSalesmanProblem:
 
         # Penalized matrix: replace Inf edges with large penalty
         self.penalized_matrix = self._build_penalized_matrix(distance_matrix)
+
+        heuristic_value = self.HEURISTIC_VALUES.get(self.filename)
+        if heuristic_value is not None:
+            object.__setattr__(GA, "HEURISTIC", float(heuristic_value))
 
     def _is_sparse_matrix(self, distance_matrix: np.ndarray) -> bool:
         """
