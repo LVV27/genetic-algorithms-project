@@ -3,7 +3,7 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import r0123456
+import r0843621
 from plot_convergence import plot_convergence, analyze_multiple_runs
 
 # Configuration
@@ -35,7 +35,7 @@ def run_single_experiment():
     print("  SINGLE EXPERIMENT MODE")
     print("═" * 70)
 
-    solver = r0123456.r0123456()
+    solver = r0843621.r0843621()
     csv_file = os.path.join(OUTPUT_DIR, "r0123456.csv")
 
     # Configure reporter and run optimization
@@ -66,14 +66,14 @@ def run_multiple_experiments(runs=10):
     for i in range(runs):
         print_experiment_header(i + 1, runs)
 
-        solver = r0123456.r0123456()
+        # solver = r0843621.r0843621()
 
         # Configure output for this run
         run_csv = os.path.join(OUTPUT_DIR, f"r0123456_run_{i}")
-        solver.reporter = r0123456.Reporter.Reporter(run_csv)
+        # solver.reporter = r0843621.Reporter.Reporter(run_csv)
 
         # Run optimization
-        solver.optimize(BENCHMARK_FILE)
+        # solver.optimize(BENCHMARK_FILE)
 
         # Store path for analysis (Reporter adds .csv extension)
         csv_files.append(run_csv + ".csv")
@@ -92,7 +92,7 @@ def main():
 
     # Choose experiment type
     # run_single_experiment()
-    run_multiple_experiments(runs=10)
+    run_multiple_experiments(runs=500)
 
 
 if __name__ == "__main__":
