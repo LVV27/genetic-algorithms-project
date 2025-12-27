@@ -85,7 +85,7 @@ class GAParams:
     # ==========================================================
     # SURVIVOR SELECTION / REPLACEMENT OPERATOR
     # ==========================================================
-    STALL_LIMIT: int = 5000
+    STALL_LIMIT: int = 10_000_000
 
     # ==========================================================
     # FITNESS EVALUATION / CONSTRAINT HANDLING

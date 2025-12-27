@@ -4,14 +4,13 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import r0843621
-from plot_convergence import plot_convergence, analyze_multiple_runs
+from plot_convergence import plot_convergence, analyze_multiple_runs, extract_run_metrics
 
 # Configuration
 BENCHMARK_FILE = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "benchmark", "tour50.csv")
 )
-OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "output"))
-
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../assets/"))
 
 def setup_output_directory():
     """Create output directory if it doesn't exist."""
@@ -35,13 +34,15 @@ def run_single_experiment():
     print("  SINGLE EXPERIMENT MODE")
     print("═" * 70)
 
-    solver = r0843621.r0843621()
-    csv_file = os.path.join(OUTPUT_DIR, "r0123456.csv")
+    print(OUTPUT_DIR)
+    #solver = r0843621.r0843621()
+    csv_file = os.path.join(OUTPUT_DIR, "r0843621_1000.csv")
 
     # Configure reporter and run optimization
-    solver.reporter.filename = csv_file
-    solver.optimize(BENCHMARK_FILE)
+    #solver.reporter.filename = csv_file
+    #solver.optimize(BENCHMARK_FILE)
 
+    extract_run_metrics(csv_file)
     # Visualize results
     plot_convergence(csv_file)
 
@@ -91,8 +92,8 @@ def main():
     setup_output_directory()
 
     # Choose experiment type
-    # run_single_experiment()
-    run_multiple_experiments(runs=500)
+    run_single_experiment()
+    # run_multiple_experiments(runs=500)
 
 
 if __name__ == "__main__":

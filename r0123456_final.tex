@@ -18,6 +18,21 @@
 
 \usepackage{tikz}
 
+\usepackage{float}
+
+% Recommended for wrapping long comma-separated sequences:
+\usepackage{xurl}  % in the preamble (often alongside hyperref)
+
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  literate={,}{,\allowbreak}1
+}
+
+
 \def\retake{0}
 \newcommand{\switch}[2]{\ifnum\retake=0{#1}\else{#2}\fi}
 
@@ -66,8 +81,8 @@ Remove the current section from your final report.
 \begin{itemize}
  \item \textbf{Group members during group phase:} Thomas Borry, Mikhail Chakhovich, and Victor Geneste
  \item \textbf{Time spent on group phase:} 12 hours
- \item \textbf{Time spent on final code:} 32 hours
- \item \textbf{Time spent on final report:} 6 hours
+ \item \textbf{Time spent on final code:} 35 hours
+ \item \textbf{Time spent on final report:} 8 hours
 \end{itemize}
 
 \section{Changes since \switch{the group phase}{your previous submission} \hfill(target: $0.25$ pages)}
@@ -82,16 +97,16 @@ Remove the current section from your final report.
 \end{enumerate}
 
 \begin{enumerate}
-	\item Replaced elitist \((\lambda+\mu)\) selection with deterministic crowding based on directed edge overlap to maintain diversity.
-	\item Switched crossover operator from Partially Mapped Crossover (PMX) to Order Crossover (OX).
-	\item Extended mutation to include weighted mix of swap, inversion, insertion, with self-adaptive rate.
-	\item Added 2-opt local search as a memetic refinement, auto-disabled on sparse instances.
-	\item Added a feasibility mask with penalized distance matrix.
-	\item Updated population initialization with a mixed strategy using greedy fraction and many restart attempts.
-	\item Increased selection pressure by retuning tournament size from 3 to 5, setting crossover probability to 1.0.
-	\item Accelerated bottlenecks using Numba JIT for more generations within the time budget.
-	\item Added convergence diagnostic tools, including edge-based diversity metrics and structured logging.
+	\item Replaced random-only population initialization with a mixed initialization strategy (multi-start nearest-neighbor greedy seeding + random fill) (see Section~3.4).
+	\item Expanded mutation from a single swap operator to a portfolio of operators (swap, inversion, insertion, scramble) with weighted selection, while keeping self-adaptive per-individual mutation rates (see Section~3.6).
+	\item Replaced PMX recombination with Order Crossover (OX) (see Section~3.7).
+	\item Replaced $(\lambda+\mu)$ truncation survivor selection with deterministic crowding to control replacement and preserve niches (see Section~3.8).
+	\item Added an Or-opt local search component and integrated it into the GA (applied on improvements and/or periodically to top-$k$ individuals) (see Section~3.9).
+	\item Added a similarity measure based on directed edge overlap via successor representation to support deterministic crowding rival selection (see Section~3.10).
+	\item Added explicit sparse-instance handling by maintaining a feasibility mask for edges and detecting sparsity in the distance matrix (see Section~3.13).
+	\item Introduced penalty-based constraint handling for missing (Inf) edges by constructing a penalized distance matrix (optional) instead of relying purely on infeasibility rejection (see Section~3.13).
 \end{enumerate}
+
 
 \section{Final design of the evolutionary algorithm \hfill(target: $3.5$ pages)} 
 
@@ -153,190 +168,141 @@ evaluation. The deterministic crowding diversity measure additionally builds a t
 \ReplaceMe{How do you initialize the population? How did you determine the number of individuals? Did you implement advanced initialization mechanisms (local search operators, heuristic solutions)? If so, describe them. Do you believe your approach maintains sufficient diversity? How do you ensure that your population enrichment scheme does not immediately take over the population? Did you implement other initialization schemes that did not make it to the final version? Why did you discard them? How did you determine the population size?}
 
 The initial population is created using a \textbf{mixed strategy}: a small fraction
-($\lfloor \texttt{GREEDY\_FRACTION}\cdot \lambda \rfloor$) is generated with a \textbf{nearest-neighbour greedy}
-heuristic from multiple random start cities, and the remaining individuals are \textbf{uniformly random
-	permutations}. All candidates are evaluated immediately and only tours with finite fitness are kept.
+($\texttt{GREEDY\_FRACTION}\cdot \lambda$) is generated with a \textbf{nearest-neighbour greedy}
+heuristic (multiple random start cities), and the remaining individuals are \textbf{uniformly random
+permutations}. Candidates are evaluated immediately; with \texttt{USE\_PENALTY\_FOR\_INF} enabled, invalid tours receive a large finite penalty (\texttt{INF\_PENALTY\_FACTOR}=10.0) instead of being discarded.
 
-The population size was set to $\lambda=100$ after empirical tuning: larger populations increased runtime and
-reduced the number of generations within the time limit, while smaller populations converged prematurely. The
-greedy component is intentionally capped to a very small fraction (default $\texttt{GREEDY\_FRACTION}=0.01$),
-so enrichment provides \emph{good building blocks} without taking over the population; the bulk of the
-population remains random, which maintains diversity from the start.
-
-
-TODO
-dont use we stupid
-
-We also considered (and tested) using a much larger greedy seed set and applying local search during
-initialization, but these settings reduced diversity and consumed too much of the available time budget; hence,
-local search is only applied later on newly improved best solutions instead of during initialization.
-
+The population size is set to $\lambda=100$ as a trade-off under the fixed time budget: larger populations reduce the number of generations (and thus crossover opportunities), while smaller populations lose diversity and converge faster. The greedy component is intentionally kept small (default $\texttt{GREEDY\_FRACTION}=0.01$, i.e., 1 greedy individual for $\lambda=100$) to inject high-quality building blocks without dominating the population; over successive generations, crossover propagates useful edges and the population can approach greedy-like tours even from predominantly random initialization.
 
 \subsection{Selection operators}
 
 \ReplaceMe{Which selection operators did you implement? If they are not from the slides, describe them. Can you motivate why you chose this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other selection operators not included in the final version? Why did you discard them?}
 
-Parent selection is performed using \textbf{$k$-tournament selection}: for each parent, $k$ individuals are
-sampled uniformly at random from the current population and the individual with the lowest fitness is selected.
-This operator was chosen because it is simple, efficient, and provides a controllable trade-off between
-selection pressure and diversity.
+Parent selection uses \textbf{$k$-tournament selection}: for each parent, $k$ individuals are sampled uniformly at random from the current population and the individual with the lowest fitness is selected. This operator is simple, efficient, and offers a direct control over the trade-off between selection pressure and diversity.
 
-The main parameter is the tournament size $k$ (set to $k=5$). Larger $k$ increases selection pressure and
-accelerates convergence but risks premature convergence; smaller $k$ preserves diversity but slows progress.
-In the final version, $k$ is kept constant (no dynamic schedule).
-
-TODO
-
-Other selection schemes were considered (e.g.\ fitness-proportional or rank-based selection), but they were
-more sensitive to scaling/noise and did not provide a clear improvement over tournament selection in our tuning,
-so they were discarded.
+The main parameter is the tournament size $\texttt{TOURNAMENT\_K}=7$. Increasing $\texttt{TOURNAMENT\_K}$ raises selection pressure, promoting early exploitation by selecting high-quality individuals (including the greedy seed) more frequently as parents, which typically yields stronger offspring. However, too large values can reduce diversity and lead to premature convergence; smaller values preserve diversity but slow progress. In the final version, $\texttt{TOURNAMENT\_K}$ is kept constant (no dynamic schedule).
 
 \subsection{Mutation operators}
 
 \ReplaceMe{Which mutation operators did you implement? If they are not from the slides, describe them. How do you choose among several mutation operators? Do you believe it will introduce sufficient randomness? Can that be controlled with parameters? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other mutation operators not included in the final version? Why did you discard them?}
 
-We use a \textbf{mutation portfolio} for permutation tours: \textit{swap} (exchange two cities), \textit{inversion}
-(reverse a contiguous segment), and \textit{insertion} (remove one city and insert it elsewhere). If mutation is
-triggered, the operator is chosen by a \textbf{weighted roulette} (in the final version: inversion is preferred,
-as it typically performs better for the TSP, while swap/insertion provide additional perturbations).
+A \textbf{mutation portfolio} is used for permutation tours: \texttt{swap} (exchange two cities), \texttt{inversion}
+(reverse a segment), \texttt{insertion} (move one city), and \texttt{scramble} (randomly permute a segment). When
+mutation is applied, the operator is sampled by a weighted roulette with probabilities 0.20, 0.60, 0.15, and
+0.05 respectively.
 
-Randomness is controlled by an \textbf{individual-specific mutation rate} $\alpha$:
-mutation is applied with probability $\alpha$, where $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ at
-initialization. The rate is then inherited by offspring (i.e.\ a simple self-adaptive parameter), so different
-lineages can maintain different exploration levels. We do not use a generation-dependent schedule for $\alpha$.
+Randomness is controlled by an \textbf{individual-specific mutation rate} $\alpha$: mutation is applied with probability $\alpha$, with $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ at initialization and inherited by offspring (self-adaptive). No generation-dependent schedule is used.
 
+Compared to single-operator mutation (e.g.\ swap-only), the portfolio maintains higher population-level exploration; while mutation rarely improves the elite directly, it helps sustain diversity and introduces novel building blocks for crossover.
 
-TODO
-no wee
-
-We tested simpler mutation-only setups (e.g.\ swap-only) but observed weaker exploration and slower improvement,
-hence the final multi-operator configuration was kept.
 
 \subsection{Recombination operators}
 
 \ReplaceMe{Which recombination operators did you implement? If they are not from the slides, describe them. How do you choose among several recombination operators? Why did you choose these ones specifically? Explain how you believe that these operators can produce offspring that combine the best features from their parents. How does your operator behave if there is little overlap between the parents? Can your recombination be controlled with parameters; what behavior do they change? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other recombination operators not included in the final version? Why did you discard them? Did you consider recombination with arity strictly greater than 2?}
 
-Recombination is performed with \textbf{Order Crossover (OX)} for permutation encodings. OX copies a random
-contiguous segment from the first parent and then fills the remaining positions by scanning the second parent in
-order and inserting the cities that are not yet present. This preserves \textbf{relative order information} from
-the second parent while keeping a block (subtour fragment) from the first parent.
+Recombination uses \textbf{Order Crossover (OX)} for permutation tours. OX copies a random contiguous segment
+from parent 1 into the offspring and fills the remaining positions by scanning parent 2 in order, inserting the
+cities that are not yet present. This preserves a block (subtour fragment) from parent 1 while maintaining
+relative order information from parent 2. Since each city is inserted at most once, OX produces a valid
+\emph{permutation}; the resulting tour is therefore structurally valid, although its objective value can still be
+poor.
 
-We use a single recombination operator (no operator portfolio); crossover is applied with probability
-$p_c$ (final setting: $p_c=1$) and otherwise the first parent is cloned. The segment boundaries are sampled
-uniformly at random, which controls how disruptive the crossover is (short segments $\rightarrow$ more parent-2
-order preserved; long segments $\rightarrow$ more parent-1 block preserved). No self-adaptivity or
-generation-dependent schedule is used for $p_c$.
+Crossover is applied with probability $\texttt{CROSSOVER\_PROB}=1.0$; this maximizes mixing and helps introduce
+new building blocks into the population under the fixed time budget. Segment boundaries are sampled uniformly
+at random, which implicitly controls disruption (shorter copied segments preserve more of parent 2's order;
+longer segments preserve more of parent 1's block). No self-adaptivity or generation-dependent schedule is used.
 
+Other permutation crossovers such as PMX were considered, but OX was retained because it is simpler, robust
+(always feasible), and better preserves meaningful ordering information for TSP tours in this implementation.
 
-TODO
-
-When parents have little overlap, OX still produces a valid permutation: the copied segment remains intact and
-the rest is essentially the order induced by parent 2, yielding meaningful mixing without requiring repair.
-We considered other permutation crossovers (e.g.\ PMX / edge-based variants), but OX was selected due to its
-robustness and good empirical performance in our tuning. We did not use arity $>2$ recombination in the final
-version.
 
 \subsection{Elimination operators}
 
 \ReplaceMe{Which elimination operators did you implement? If they are not from the slides, describe them. Why did you select this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other elimination operators not included in the final version? Why did you discard them?} 
 
-Survivor selection uses \textbf{deterministic crowding}. After generating offspring, each child competes with the
-\emph{most similar} individual in the current population (its ``rival'') and replaces it only if it has better
-fitness. Similarity is measured by \textbf{directed edge overlap} using a successor representation
-($\mathrm{succ}[i] =$ next city), i.e.\ the number of matching directed edges. Ties are broken by choosing the
-closest fitness.
+%% elimination is critical!!
 
-This elimination operator was selected to \textbf{preserve diversity} and reduce premature convergence, while
-still enforcing progress through local competition rather than global truncation. It has no critical continuous
-hyperparameters in our implementation; the main design choice is the similarity metric (edge overlap). We do not
-vary elimination settings over time.
+Survivor selection uses \textbf{deterministic crowding}. After offspring are generated, each child competes only
+against its \emph{most similar} individual in the current population (its rival) and replaces it only if it has
+better fitness. Similarity is measured by \textbf{directed edge overlap} using a successor representation
+($\mathrm{succ}[i]$ = next city), i.e., the number of matching directed edges between the two tours; ties are
+broken using closest fitness.
 
-We also used standard \textbf{($\lambda+\mu$) truncation} earlier (keep best individuals from parents+offspring),
-but it increased selection pressure too much and reduced diversity, so deterministic crowding was preferred in
-the final version.
+This local competition preserves diversity by preventing genetically distant individuals from directly replacing
+each other, so genetic material is less likely to be discarded by global selection. A direct consequence is that
+the population mean can remain much worse than the elite solution, since improvements mainly replace similar
+tours rather than pushing the entire population toward the best.
+
+Standard \textbf{($\mu+\lambda$) truncation} (selecting the best individuals from parents+offspring) was tested
+earlier, but it increased selection pressure too strongly and caused rapid population collapse, so deterministic
+crowding was retained in the final version.
+
+%% lso also is very critical!!
 
 \subsection{Local search operators}
 
 \ReplaceMe{What local search operators did you implement? Describe them. Did they cause a significant improvement in the performance of your algorithm? Why (not)? Did you consider other local search operators that did not make the cut? Why did you discard them? Are there parameters that need to be determined in your operator? Do you use an advanced scheme to determine them (e.g., adaptive or self-adaptive)?}
 
-We implemented a \textbf{2-opt} local search operator. A 2-opt move selects two indices $(i,j)$ and reverses the
-segment $[i,\dots,j]$, which replaces two edges by two new edges; improving moves are accepted iteratively until
-no further improvement is found or a maximum number of iterations is reached. To avoid invalid edges on sparse
-instances, candidate moves are only considered if the newly introduced edges are feasible; furthermore, 2-opt is
-\textbf{skipped entirely} when the instance is detected as sparse.
+A \textbf{Or-opt} local search is used. Or-opt removes a short consecutive chain of cities and reinserts it
+elsewhere; improving moves are accepted and repeated for a limited number of iterations. The chain length is
+fixed to $\ell \leq \texttt{OR\_OPT\_MAX\_CHAIN\_LEN}=3$, which provides a good trade-off between move
+expressiveness and cost.
 
-In the final algorithm, 2-opt is applied \textbf{only when a new global best is found}, which provided noticeable
-extra improvements without dominating the runtime. The main parameters are the maximum number of 2-opt
-iterations and the improvement strategy (first-improvement vs.\ best-improvement); we use best-improvement with
-a fixed iteration cap. No adaptive/self-adaptive control is used.
-
-We considered applying local search to all offspring or during initialization, but this consumed too much time and
-reduced effective exploration, so the final design restricts local search to rare best-solution updates.
+Or-opt is computationally demanding, so it is accelerated with \textbf{Numba} and applied sparingly: once
+immediately after initialization, and then every $\texttt{LS\_INTERVAL}=100$ generations to only the top
+$\texttt{LS\_TOP\_K}=1$ individual(s). Besides improving final quality, it typically accelerates progress by
+escaping local minima via targeted reinsertions that crossover and mutation would reach only slowly through many
+small steps. This component is the main driver behind consistently beating the greedy heuristic by a large
+margin: without Or-opt, improvements over the heuristic were still common on dense instances (e.g.\ 50--500
+cities), but on sparse instances (750--1000 cities) the GA often struggled to surpass the heuristic and only
+occasionally found improvements.
 
 \subsection{Diversity promotion mechanisms}
 
 \ReplaceMe{Did you implement a diversity promotion scheme? If yes, which one? If no, why not? Describe the mechanism you implemented. In what sense does the mechanism improve the performance of your evolutionary algorithm? Are there parameters that need to be determined? Did you use an advanced scheme to determine them?}
 
-Yes. Diversity is promoted through the \textbf{deterministic crowding} elimination scheme. Instead of globally
-keeping only the best individuals, each offspring competes with the \emph{most similar} individual in the current
-population (its rival) and replaces it only if it has better fitness. Similarity is measured by \textbf{directed
-	edge overlap} (computed via a successor representation), which encourages the population to maintain multiple
-coexisting ``niches'' of tours.
+Diversity is primarily maintained by the \textbf{deterministic crowding} survivor selection described in the
+previous subsection. In practice, the diversity mechanism relies on computing tour similarity via the successor
+representation (\texttt{build\_successor}) and selecting rivals by directed edge overlap
+(\texttt{best\_rival\_index\_by\_edge\_overlap}), which is computationally demanding but helps reduce premature
+convergence by limiting competition to genetically similar individuals.
 
-This mechanism improves performance by \textbf{reducing premature convergence}: improvements are introduced
-locally within similar solutions, while dissimilar solutions are less likely to be overwritten by a single dominant
-lineage. In our implementation there are no tunable hyperparameters beyond the chosen similarity metric; we do
-not use adaptive or time-varying diversity control.
+A practical consequence is that the elite solution often converges quickly, while the rest of the population may
+close the gap only later (and sometimes after local search has already produced a strong best solution). No
+additional diversity control or adaptive scheme is used beyond this crowding-based competition.
+
 
 \subsection{Stopping criterion}
 
 \ReplaceMe{Which stopping criterion did you implement? Did you combine several criteria?}
 
+Termination follows the provided \textbf{time-based} criterion from the template: each generation calls
+\texttt{Reporter.report(...)} and the run stops as soon as the reporter signals that the time limit is reached
+(return value $<0$). No additional stopping conditions are used. Two internal safeguards,
+$\texttt{GENERATIONS}=10{,}000{,}000$ and $\texttt{STALL\_LIMIT}=10{,}000{,}000$, are included for testing to
+avoid unnecessarily long runs when the time limit is not enforced; in the final configuration they are set high
+enough not to trigger before the time limit.
 
-TODO it is the restriction not my stopping criteria
-
-The algorithm uses a \textbf{time-based stopping criterion}: in each generation we call the provided
-\texttt{Reporter.report(...)} function, and the run terminates as soon as it signals that the time limit is reached
-(return value $< 0$). We do not combine this with additional criteria (e.g.\ maximum generations without
-improvement), although a generation counter is present as a practical upper bound.
 
 \subsection{Parameter selection}
 
 \ReplaceMe{For all of the parameters that are not automatically determined by adaptivity or self-adaptivity (as you have described above), describe how you determined them. Did you perform a hyperparameter search? How did you do this? How did you determine these parameters would be valid both for small and large problem instances?}
 
-TODO lot of blabla
-
-All fixed parameters (e.g.\ $\lambda=100$, $\mu=200$, $k=5$, $p_c=1$, operator weights, 2-opt iteration cap,
-and the sparsity threshold) were determined via \textbf{empirical tuning} on the provided training instances.
-We performed a small manual hyperparameter search: starting from the group-phase baseline, we varied one
-parameter group at a time (population/offspring sizes, selection pressure, mutation bounds and operator mix,
-and local search budget) and kept changes that improved the final objective \emph{within the time limit} and
-showed stable behavior across multiple runs (different random seeds).
-
-To avoid overfitting to a single instance size, tuning was checked on both smaller and larger instances, focusing
-on settings that were \textbf{time-robust}: (i) moderate population sizes to allow many generations, (ii) constant
-selection pressure ($k$ fixed), and (iii) a bounded local-search budget applied only on rare best updates.
-Additionally, sparse instances are handled explicitly (penalized evaluation and skipping 2-opt), which improves
-robustness across different graph structures.
+Most parameters were chosen by iterative tuning based on observed performance (final objective and convergence
+behavior) under the 5-minute budget. Candidate settings were evaluated across all provided instances, with
+particular emphasis on the larger/sparser cases (750 and 1000 cities), since improvements that stabilize these
+harder instances typically also carry over to the smaller/dense ones, whereas the reverse is not always true.
 
 \subsection{Other considerations}\label{sec_oth}
 
 \ReplaceMe{Did you consider other items not listed above, such as elitism, multiobjective optimization strategies (e.g., island model, pareto front approximation), a parallel implementation, or other interesting computational optimizations (e.g. using advanced algorithms or data structures)? You can describe them here or add additional subsections as needed.}
 
-We considered several additional extensions. \textbf{Explicit elitism} is not added as a separate mechanism,
-because the global best is tracked and deterministic crowding already tends to preserve strong individuals; adding
-extra elitism increased selection pressure and reduced diversity in preliminary tests.
-
-We did not implement \textbf{multiobjective} or \textbf{island-model} strategies due to time/complexity constraints
-and because the provided evaluation is single-objective (tour length). Likewise, we did not implement explicit
-\textbf{parallelization}; however, we focused on computational optimizations that improve performance within a
-single process.
-
-The main computational optimization is \textbf{Numba acceleration} for the fitness evaluation and core helper
-routines (nearest-neighbour construction, successor building, and edge-overlap computations). In addition, sparse
-instances are handled explicitly via \textbf{penalized distances} for missing edges and by \textbf{skipping 2-opt}
-when the graph is sparse, which avoids wasting time on infeasible or expensive local-search moves.
-
+No island-model, multiobjective optimization, or explicit parallelization was implemented; the focus was on
+single-objective performance under the fixed time budget. The main optimization is \textbf{Numba} acceleration
+for performance-critical routines executed repeatedly: fitness evaluation and the edge-overlap computations used
+by deterministic crowding (edge-based diversity preservation). The greedy constructor is only executed during
+initialization. Numba compiles selected Python functions to optimized machine code at runtime via LLVM, often
+reaching near C speed.
 
 \section{Numerical experiments \hfill(target: 1.5 pages)}
 
@@ -366,20 +332,63 @@ Unless stated otherwise, the following parameter values were used:
 	\item Sparsity detection threshold: $\texttt{SPARSITY\_THRESHOLD}=0.10$.
 \end{itemize}
 
+\paragraph{Algorithm parameters (fixed for all experiments).}
+Unless stated otherwise, the following parameter values were used:
+\begin{itemize}
+  \item \textbf{Initialization.}
+  $\texttt{POPULATION\_SIZE}=100$, $\texttt{GREEDY\_FRACTION}=0.01$,
+  $\texttt{GREEDY\_ATTEMPTS\_MULTIPLIER}=200$.
+
+  \item \textbf{Selection.}
+  $\texttt{TOURNAMENT\_K}=7$.
+
+  \item \textbf{Recombination.}
+  $\texttt{CROSSOVER\_PROB}=1.0$.
+
+  \item \textbf{Mutation.}
+  Self-adaptive mutation rate bounds $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ with
+  $\texttt{MUTATION\_ALPHA\_MIN}=0.08$ and $\texttt{MUTATION\_ALPHA\_MAX}=0.20$. When mutation is applied, the
+  operator is sampled by weighted roulette: \texttt{swap} (0.20), \texttt{inversion} (0.60), \texttt{insertion}
+  (0.15), and \texttt{scramble} (0.05).
+
+  \item \textbf{Diversity promotion.}
+  Deterministic crowding with directed edge-overlap similarity (no additional parameters).
+
+  \item \textbf{Local search (Or-opt).}
+  $\texttt{USE\_OR\_OPT}=\texttt{True}$,
+  $\texttt{OR\_OPT\_MAX\_ITERS}=10$,
+  $\texttt{OR\_OPT\_MAX\_CHAIN\_LEN}=3$,
+  $\texttt{LS\_INTERVAL}=100$,
+  $\texttt{LS\_TOP\_K}=1$.
+
+  \item \textbf{Constraint handling.}
+  $\texttt{USE\_PENALTY\_FOR\_INF}=\texttt{True}$,
+  $\texttt{INF\_PENALTY\_FACTOR}=10.0$.
+
+  \item \textbf{Execution / backend.}
+  $\texttt{USE\_NUMBA}=\texttt{True}$.
+\end{itemize}
+
 \paragraph{Instance-dependent parameters.}
-The only instance-dependent quantities are derived from the number of cities $n$ in the input distance matrix:
-each individual is a permutation of length $n$, and the sparsity detector computes the fraction of off-diagonal
-$\infty$ entries over $n(n-1)$.
+The only instance-dependent quantities are derived from the number of cities $n$ in the input distance matrix.
+Each individual is a permutation of length $n$, and the sparsity detector computes the fraction of off-diagonal
+$\infty$ entries over $n(n-1)$. The edge-diversity monitor depends on $n$ (and population size $|\mathcal{P}|$)
+and normalizes the number of unique directed edges by
+\[
+\frac{\lvert E_{\text{unique}}\rvert}{\min(|\mathcal{P}|\,n,\; n(n-1))},
+\]
+since the number of observed unique edges cannot exceed the total edges present in the population
+($|\mathcal{P}|\,n$) nor the total number of possible directed edges ($n(n-1)$).
+
 
 \paragraph{System information.}
 All experiments were executed on:
 \begin{itemize}
-	\item OS: Fedora Linux 42 (Workstation Edition), kernel 6.17.13-200.fc42.x86\_64
+	\item OS: Fedora Linux 42 (Workstation Edition),
 	\item CPU: AMD Ryzen 5 4500U, 6 cores, base clock reported at 2.38\,GHz
-	\item Memory: 8\,GiB RAM (7.12\,GiB usable reported)
+	\item Memory: 8\,GiB RAM
 	\item Python: \texttt{Python 3.13.11}
 \end{itemize}
-
 
 \subsection{tour50.csv}
 
@@ -391,8 +400,84 @@ Interpret your results. How do you rate the performance of your algorithm (time,
 
 Solve this problem 500 times and record the results. Make a histogram of the final mean fitnessess and the final best fitnesses of the 500 runs. Comment on this figure: is there a lot of variability in the results, what are the means and the standard deviations?}
 
-[35,5,21,48,16,42,18,25,27,9,7,14,31,13,29,12,17,44,47,20,26,45,43,15,32,2,49,23,19,6,22,8,38,10,11,40,1,3,24,36,0,46,4,39,28,37,33,34,30,41]
-[35,5,48,21,18,42,16,25,27,9,7,14,31,13,29,12,17,44,47,20,26,45,43,15,32,2,49,23,19,6,22,8,38,10,11,40,1,3,24,36,0,46,4,39,28,37,33,34,30,41]
+% INTRODUCE FIGURE
+
+Figure~\ref{fig:tour50_convergence} shows the evolution of the population on \texttt{tour50.csv} during a 5-minute run.
+Both the best objective value (elite individual) and the mean objective value (population average) are reported over the generations.
+These curves indicate (i) how quickly good solutions are found and (ii) whether improvements continue or a stagnation plateau is reached.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.95\linewidth]{assets/tour50_convergence.png}
+	\caption{Convergence on \texttt{tour50.csv} (5-minute run): mean and best objective values over generations.}
+	\label{fig:tour50_convergence}
+\end{figure}
+
+% DISCUSS RESULTS
+
+% INITIALIZATION
+% Initialized 100 individuals (1 greedy, 99 random)
+% Mean                               64434.45
+% Best                               15664.57
+% Worst                              73679.18
+
+% 15664.57 (begin) - 13886.82 (end) = 1777,75
+
+% iteration of last improvement: 378
+% time of last improvement (s): 3.43
+% time to best solution (s): 3.43
+% time to reach plateau (s): 3.43  (gen 378)
+% gap mean - best (final): 9763.55
+% final best value: 13886.82
+% final mean value: 23650.37
+% improvement amount: 1777,75
+% percentage: (1777.75/15664.57) * 100 = 11.35 ~11
+
+\paragraph{Results on \texttt{tour50.csv} (5 min).}
+A population of 100 individuals (1 greedy + 99 random) was initialized, producing a large initial spread (mean $64{,}434.45$, best $15{,}664.57$, worst $73{,}679.18$), showing the greedy seed is substantially better than random tours.
+Figure~\ref{fig:tour50_convergence} indicates rapid early improvement followed by stagnation: the final best is $13{,}886.82$ (gain $1{,}777.75$, i.e.\ $11.35\%$), with the last improvement at generation 378 after 3.43\,s and no further progress for the remaining budget.
+The final mean is $23{,}650.37$ (mean--best gap $9{,}763.55$), suggesting some diversity remains but does not yield additional elite improvements once the plateau is reached.
+The best tour length is $13{,}886.82$ with sequence:
+
+% INSERT SEQUENCE FOUND
+
+% 35,5,48,21,18,42,16,27,25,9,7,14,31,13,29,12,17,44,47,20,26,45,43,15,32,2,49,23,19,6,22,8,38,10,11,40,1,3,24,36,0,46,4,39,28,37,33,34,30,41
+
+\texttt{35,\allowbreak 5,\allowbreak 48,\allowbreak 21,\allowbreak 18,\allowbreak 42,\allowbreak 16,\allowbreak 27,\allowbreak 25,\allowbreak 9,\allowbreak 7,\allowbreak 14,\allowbreak 31,\allowbreak 13,\allowbreak 29,\allowbreak 12,\allowbreak 17,\allowbreak 44,\allowbreak 47,\allowbreak 20,\allowbreak 26,\allowbreak 45,\allowbreak 43,\allowbreak 15,\allowbreak 32,\allowbreak 2,\allowbreak 49,\allowbreak 23,\allowbreak 19,\allowbreak 6,\allowbreak 22,\allowbreak 8,\allowbreak 38,\allowbreak 10,\allowbreak 11,\allowbreak 40,\allowbreak 1,\allowbreak 3,\allowbreak 24,\allowbreak 36,\allowbreak 0,\allowbreak 46,\allowbreak 4,\allowbreak 39,\allowbreak 28,\allowbreak 37,\allowbreak 33,\allowbreak 34,\allowbreak 30,\allowbreak 41}
+
+% interpretation after objective values
+
+The rapid early improvement is driven by strong exploitation of the greedy-seeded individual, which is further refined by Or-opt. After this, the best objective reaches a plateau quickly, while the population mean continues to decrease more gradually, indicating ongoing assimilation of good building blocks through breeding. Due to deterministic crowding, population diversity does not collapse: weaker lineages are preserved and local competition prevents the mean from fully catching up to the best.
+
+
+% INTRODUCE FIGURE
+
+Figure~\ref{fig:tour50_hist_final_fitness} shows the distribution of final mean fitness (population average) and final best fitness (elite) over 500 independent 5-minute runs on \texttt{tour50.csv}.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.95\linewidth]{assets/tour50_hist_final_fitness.png}
+	\caption{Distribution over 500 runs on \texttt{tour50.csv} (5-minute limit): histograms of final mean fitness and final best fitness.}
+	\label{fig:tour50_hist_final_fitness}
+\end{figure}
+
+DISCUSS RESULTS
+
+% STATISTICAL SUMMARY
+% Metric: Mean Fitness,Best Fitness
+% Runs: 500,500
+% Mean: 20500.30, 13911.46
+% Std Dev: 464.66,25.74
+% Min: 19032.13,13886.82
+% Max: 21952.17,14069.51
+% Median: 20539.82,13911.26 
+
+\paragraph{Results on \texttt{tour50.csv} (500 runs).}
+Final mean fitness: $20{,}500.30 \pm 464.66$ (median $20{,}539.82$, min $19{,}032.13$, max $21{,}952.17$).
+Final best fitness: $13{,}911.46 \pm 25.74$ (median $13{,}911.26$, min $13{,}886.82$, max $14{,}069.51$).
+
+The final best fitness is tightly clustered, suggesting that most runs converge to the same dominant local optimum. During development, a slightly better best value was observed once but did not reappear consistently, indicating that escaping this basin of attraction is rare under the stochastic search dynamics. This is expected near high-quality solutions: improvements become infrequent and run outcomes concentrate on a small set of distinct elite values, while the final mean varies more due to differing population-level convergence under deterministic crowding.
+
 
 \subsection{tour250.csv}\label{sec_shorttour}
 \ReplaceMe{Run your algorithm on this benchmark problem (with the 5 minute time limit from the Reporter). \textbf{Include a typical convergence graph, by plotting the mean and best objective values in function of the time} (for example based on the output of the Reporter class).
@@ -401,10 +486,92 @@ What is the best tour length you found in each case?
 
 Interpret your results. How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, quality of the best solution, etc)? Is your solution close to the optimal one?}
 
+% INTRODUCE FIGURE
+
+Figure~\ref{fig:tour250_convergence} shows the evolution of the population on \texttt{tour250.csv} during a 5-minute run.
+Both the best objective value (elite individual) and the mean objective value (population average) are reported over the generations,
+highlighting the speed of improvement and the onset of stagnation.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.95\linewidth]{assets/tour250_convergence.png}
+	\caption{Convergence on \texttt{tour250.csv} (5-minute run): mean and best objective values over generations.}
+	\label{fig:tour250_convergence}
+\end{figure}
+
+% DISCUSS RESULTS
+
+% INITIALIZATION
+% Initialized 100 individuals (1 greedy, 99 random)
+% Mean                              960533.03
+% Best                               87874.08
+% Worst                            1036725.06
+
+% 87874.08 - 75567.75 = 12306.33
+
+% iteration of last improvement: 3624
+% time of last improvement (s): 76.80
+% time to best solution (s): 76.80
+% time to reach plateau (s): 76.80  (gen 3624)
+% gap mean - best (final): 188486.96
+% final best value: 75567.75
+% final mean value: 264054.71
+% improvement amount: 12306.33
+% percentage: (12306.33/87874.08) * 100 = 14.00 ~14
+
+\paragraph{Results on \texttt{tour250.csv} (5 min).}
+A population of 100 individuals (1 greedy + 99 random) was initialized, producing a large initial spread (mean $960{,}533.03$, best $87{,}874.08$, worst $1{,}036{,}725.06$), showing the greedy seed is substantially better than random tours.
+Figure~\ref{fig:tour250_convergence} indicates improvement followed by stagnation: the final best is $75{,}567.75$ (gain $12{,}306.33$, i.e.\ $14.00\%$), with the last improvement at generation 3624 after 76.80\,s and no further progress for the remaining budget.
+The final mean is $264{,}054.71$ (mean--best gap $188{,}486.96$), suggesting diversity remains but does not yield additional elite improvements once the plateau is reached.
+
+% interpretation after objective values
+
+The improvement is driven by exploitation of the greedy-seeded individual and subsequent refinement by Or-opt. After the elite reaches a plateau, the population mean continues to decrease more gradually through breeding, while deterministic crowding maintains diversity and prevents the mean from fully catching up to the best.
+
 
 \subsection{tour1000.csv}
 
 \ReplaceMe{Answer the same questions as in \cref{sec_shorttour}.}
+
+INTRODUCE FIGURE
+
+Figure~\ref{fig:tour1000_convergence} shows the evolution of the population on \texttt{tour1000.csv} during a 5-minute run.
+Both the best objective value (elite individual) and the mean objective value (population average) are reported over the generations,
+highlighting the speed of improvement and the onset of stagnation.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.95\linewidth]{assets/tour1000_convergence.png}
+	\caption{Convergence on \texttt{tour1000.csv} (5-minute run): mean and best objective values over generations.}
+	\label{fig:tour1000_convergence}
+\end{figure}
+
+DISCUSS RESULTS
+
+% INITIALIZATION
+% Initialized 100 individuals (1 greedy, 99 random)
+% Mean                            18303993.16
+% Best                               71271.27
+% Worst                           21429770.11
+ 
+% 71271.27 - 62062.87 = 9208.40
+
+% iteration of last improvement: 1500
+% time of last improvement (s): 122.21
+% time to best solution (s): 122.21
+% time to reach plateau (s): 122.21  (gen 1500)
+% gap mean - best (final): 4511022.80
+% final best value: 62062.87
+% improvement amount: 9208.40
+% percentage: (9208.40/71271.27) * 100 = 12.92 ~13
+
+\paragraph{Results on \texttt{tour1000.csv} (5 min).}
+A population of 100 individuals (1 greedy + 99 random) was initialized, producing an extreme initial spread (mean $18{,}303{,}993.16$, best $71{,}271.27$, worst $21{,}429{,}770.11$), showing the greedy seed is far better than random tours.
+Figure~\ref{fig:tour1000_convergence} indicates improvement followed by stagnation: the final best is $62{,}062.87$ (gain $9{,}208.40$, i.e.\ $12.92\%$), with the last improvement at generation 1500 after 122.21\,s and no further progress for the remaining budget.
+The final mean--best gap is $4{,}511{,}022.80$ (final mean $\approx 4{,}573{,}085.67$), suggesting diversity remains but does not yield additional elite improvements once the plateau is reached.
+
+The improvement is driven by exploitation of the greedy-seeded individual and, in particular for \texttt{tour1000.csv}, by Or-opt refinement: on smaller dense instances (50 and 250 cities) Or-opt provides additional gains, whereas on the sparse 1000-city instance it is essential to obtain consistent improvements beyond the greedy baseline.
+
 
 \section{Critical reflection \hfill(target: $1.5$ page)}
 
@@ -414,20 +581,50 @@ Interpret your results. How do you rate the performance of your algorithm (time,
 \ReplaceMe{What are the three main strengths of evolutionary algorithms in your experience?}
 
 \begin{enumerate}
- \item 
- \item 
- \item 
+  \item \textbf{Initialization}
+
+  Even a very small greedy seed (e.g., one individual) provides high-quality building blocks early, accelerating convergence toward short tours (including in ablations where local search is disabled); if a cheap greedy heuristic is available, it is worth using to avoid starting purely blind/random.
+
+  \item \textbf{Diversity}
+
+  Maintaining a population enables exploration of multiple regions of the search space in parallel; with edge-based deterministic crowding, genetic material is preserved and the population does not collapse into a single lineage.
+
+  \item \textbf{Local search}
+
+  Combining evolutionary search with Or-opt provides strong intensification near high-quality regions, allowing faster escape from local minima and substantial refinement once the search is close to a good basin.
+
 \end{enumerate}
 
 \ReplaceMe{What are the three main weak points of evolutionary algorithms in your experience?}
 
 \begin{enumerate}
- \item 
- \item 
- \item 
+  \item \textbf{Sensitivity on sparse instances.}
+  On sparse graphs (e.g., \texttt{tour1000}), improvements become rare and beating the greedy baseline reliably often requires strong local search (Or-opt), indicating a tendency to rely on intensification when the feasible search space is constrained.
+
+  \item \textbf{Computational overhead of diversity control.}
+  Edge-based deterministic crowding requires expensive similarity computations; Numba mitigates this, but a lighter diversity mechanism could reduce overhead and free budget for more generations/evaluations.
+
+  \item \textbf{Stagnation and basin trapping.}
+  Once a strong basin is found, the best solution can plateau for long periods, and escaping to a better optimum becomes unlikely without additional mechanisms.
 \end{enumerate}
 
 \ReplaceMe{Describe the main lessons learned from this project. Do you believe evolutionary algorithms are appropriate for the problem studied in this project? Why (not)? What surprised you and why? What did you learn from this project?}
+
+In practice, it can be difficult to attribute improvements to specific components (selection pressure, crossover,
+mutation, local search, or elimination), since multiple mechanisms interact simultaneously. Detailed logging and
+controlled experiments where one component is disabled at a time are therefore important to understand where
+progress actually comes from. It is also easy to focus exclusively on the best individual; however, as this is
+primarily a genetic-algorithm project, the population dynamics (diversity, mean fitness, and convergence
+behavior) are an essential part of the evaluation.
+
+Another challenge is parameter sensitivity: performance can change noticeably with small parameter adjustments
+and depends on instance characteristics such as tour length and sparsity. Consequently, parameter choices should
+be validated across multiple instance sizes, not only on the easiest cases.
+
+Overall, evolutionary search is an appropriate approach for quickly producing solutions that improve upon cheap
+heuristics (especially on dense graphs), while exact optimality is better targeted with specialized solvers.
+Genetic algorithms remain valuable when strong problem-specific solvers are unavailable, when robustness across
+instances matters, or when good solutions are needed under a strict time budget.
 
 \subsection{GenAI peer reviewing critical reflection} 
 \ReplaceMe{What are the strengths and weaknesses of the AI-generated peer review compared to the human-written one? Did Copilot identify issues the humans missed, or vice versa? Why do you think this happened? Was Copilot's review at all useful? Was it specific and concrete or rather vague and general? What is your view towards reviewing reports using generative AI? Would you want to be reviewed by an AI system or by a human? Why? Did writing your own review help you understand the other group's algorithm better than reading the AI’s version? How might relying too much on AI affect your ability to critically evaluate scientific work in the future? In what ways can AI be a helpful tool in peer review? In what ways can it be harmful?}

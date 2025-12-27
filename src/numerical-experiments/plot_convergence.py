@@ -44,18 +44,15 @@ def read_optimization_csv(csv_file: str) -> pd.DataFrame:
         raise ValueError(f"Error reading CSV file {csv_file}: {str(e)}")
 
 
-def plot_convergence(csv_file: str):
-    """
-    Plot convergence curves for mean and best fitness values.
+import matplotlib.pyplot as plt
 
-    Args:
-        csv_file: Path to the CSV file containing optimization data
-    """
+def plot_convergence(csv_file: str):
     df = read_optimization_csv(csv_file)
 
-    # Create convergence plot with modern styling
-    plt.figure(figsize=(12, 7))
-    plt.plot(
+    fig, ax_left = plt.subplots(figsize=(12, 7))
+
+    # Left axis: Mean fitness (blue)
+    ax_left.plot(
         df["Iteration"],
         df["Mean value"],
         label="Mean Fitness",
@@ -63,35 +60,35 @@ def plot_convergence(csv_file: str):
         linewidth=2,
         alpha=0.8,
     )
-    plt.plot(
+    ax_left.set_xlabel("Generation", fontsize=13, fontweight="bold")
+    ax_left.set_ylabel("Mean Fitness (Tour Length)", fontsize=13, fontweight="bold")
+    ax_left.grid(True, alpha=0.25, linestyle="--")
+
+    # Right axis: Best fitness (red)
+    ax_right = ax_left.twinx()
+    ax_right.plot(
         df["Iteration"],
         df["Best value"],
         label="Best Fitness",
         color="#e74c3c",
         linewidth=2.5,
     )
+    ax_right.set_ylabel("Best Fitness (Tour Length)", fontsize=13, fontweight="bold")
 
-    plt.xlabel("Generation", fontsize=13, fontweight="bold")
-    plt.ylabel("Fitness (Tour Length)", fontsize=13, fontweight="bold")
-    plt.title("Genetic Algorithm Convergence", fontsize=16, fontweight="bold", pad=20)
-    plt.legend(fontsize=11, framealpha=0.95)
-    plt.grid(True, alpha=0.25, linestyle="--")
-
-    # Add final value annotation
-    final_best = df["Best value"].iloc[-1]
-    plt.annotate(
-        f"Final: {final_best:.2f}",
-        xy=(df["Iteration"].iloc[-1], final_best),
-        xytext=(-60, 20),
-        textcoords="offset points",
-        bbox=dict(boxstyle="round,pad=0.5", facecolor="#e74c3c", alpha=0.8),
-        color="white",
-        fontweight="bold",
-        arrowprops=dict(arrowstyle="->", color="#e74c3c", lw=2),
+    # Combined legend
+    lines_left, labels_left = ax_left.get_legend_handles_labels()
+    lines_right, labels_right = ax_right.get_legend_handles_labels()
+    ax_left.legend(
+        lines_left + lines_right,
+        labels_left + labels_right,
+        fontsize=11,
+        framealpha=0.95,
+        loc="best",
     )
 
     plt.tight_layout()
     plt.show()
+
 
 
 def analyze_multiple_runs(csv_files: List[str]):
@@ -125,7 +122,7 @@ def analyze_multiple_runs(csv_files: List[str]):
     ax1 = plt.subplot(1, 2, 1)
     n, bins, patches = ax1.hist(
         final_means,
-        bins=10,
+        bins=100,
         color="#3498db",
         edgecolor="#2c3e50",
         alpha=0.8,
@@ -143,9 +140,9 @@ def analyze_multiple_runs(csv_files: List[str]):
         linewidth=2.5,
         label=f"Mean: {np.mean(final_means):.2f}",
     )
-    ax1.set_title(
-        "Final Mean Fitness Distribution", fontsize=13, fontweight="bold", pad=15
-    )
+    # ax1.set_title(
+    #     "Final Mean Fitness Distribution", fontsize=13, fontweight="bold", pad=15
+    # )
     ax1.set_xlabel("Mean Fitness", fontsize=11, fontweight="bold")
     ax1.set_ylabel("Frequency", fontsize=11, fontweight="bold")
     ax1.legend(fontsize=10)
@@ -155,7 +152,7 @@ def analyze_multiple_runs(csv_files: List[str]):
     ax2 = plt.subplot(1, 2, 2)
     n, bins, patches = ax2.hist(
         final_bests,
-        bins=10,
+        bins=100,
         color="#2ecc71",
         edgecolor="#27ae60",
         alpha=0.8,
@@ -173,9 +170,9 @@ def analyze_multiple_runs(csv_files: List[str]):
         linewidth=2.5,
         label=f"Mean: {np.mean(final_bests):.2f}",
     )
-    ax2.set_title(
-        "Final Best Fitness Distribution", fontsize=13, fontweight="bold", pad=15
-    )
+    # ax2.set_title(
+    #     "Final Best Fitness Distribution", fontsize=13, fontweight="bold", pad=15
+    # )
     ax2.set_xlabel("Best Fitness", fontsize=11, fontweight="bold")
     ax2.set_ylabel("Frequency", fontsize=11, fontweight="bold")
     ax2.legend(fontsize=10)
@@ -228,3 +225,53 @@ def analyze_multiple_runs(csv_files: List[str]):
         f"   • Coefficient of variation: {(np.std(final_bests) / np.mean(final_bests) * 100):.2f}%"
     )
     print()
+
+import numpy as np
+
+def extract_run_metrics(csv_file: str, eps: float = 1e-9) -> None:
+    df = read_optimization_csv(csv_file)
+
+    it = df["Iteration"].to_numpy()
+    t  = df["Elapsed time"].to_numpy()
+    mean = df["Mean value"].to_numpy()
+    best = df["Best value"].to_numpy()
+
+    # Best-so-far (monotone non-increasing)
+    best_so_far = np.minimum.accumulate(best)
+
+    final_best = float(best_so_far[-1])
+    final_mean = float(mean[-1])
+
+    # Gap mean vs best (final)
+    gap = final_mean - final_best
+
+    # Improvement amount (from first logged best to final best)
+    initial_best = float(best_so_far[0])
+    improvement = initial_best - final_best
+
+    # Iteration/time of best solution (first time reaching final best)
+    plateau_idx = int(np.argmax(best_so_far <= final_best + eps))  # first hit of final best
+    plateau_iter = int(it[plateau_idx])
+    plateau_time = float(t[plateau_idx])
+
+    # Time to best solution (same as reaching final best in this logging setup)
+    time_to_best = plateau_time
+
+    # Iteration of last improvement (last strict decrease in best-so-far)
+    drops = np.where(np.diff(best_so_far) < -eps)[0]
+    if drops.size == 0:
+        last_impr_iter = int(it[0])
+        last_impr_time = float(t[0])
+    else:
+        last_idx = int(drops[-1] + 1)  # +1 because diff refers to transition into this index
+        last_impr_iter = int(it[last_idx])
+        last_impr_time = float(t[last_idx])
+
+    # Print only what you asked for
+    print(f"iteration of last improvement: {last_impr_iter}")
+    print(f"time of last improvement (s): {last_impr_time:.2f}")
+    print(f"time to best solution (s): {time_to_best:.2f}")
+    print(f"time to reach plateau (s): {plateau_time:.2f}  (gen {plateau_iter})")
+    print(f"gap mean - best (final): {gap:.2f}")
+    print(f"final best value: {final_best:.2f}")
+    print(f"improvement amount: {improvement:.2f}")
