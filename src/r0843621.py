@@ -69,7 +69,7 @@ class GAParams:
     # ==========================================================
     # SELECTION OPERATOR
     # ==========================================================
-    TOURNAMENT_K: int = 2  # Tournament size (larger = more selective)
+    TOURNAMENT_K: int = 7  # Tournament size (larger = more selective)
 
     # ==========================================================
     # CROSSOVER OPERATOR
@@ -554,6 +554,25 @@ def mutation_insertion(individual: Individual) -> None:
         )
 
 
+def mutation_scramble(tour: np.ndarray) -> None:
+    n = len(tour)
+    if n < 4:
+        return
+
+    # ~0.6%..2.0% of n, clamped
+    k_min = max(3, int(round(0.006 * n)))
+    k_max = min(n, max(k_min, int(round(0.020 * n)), 5))
+
+    k = random.randint(k_min, k_max)
+
+    start = random.randint(0, n - k)
+    end = start + k - 1
+
+    segment = tour[start:end + 1].copy()
+    np.random.shuffle(segment)
+    tour[start:end + 1] = segment
+
+
 def mutation(individual: Individual) -> None:
     """
     Apply mutation with probability = individual.mutation_rate.
@@ -562,8 +581,8 @@ def mutation(individual: Individual) -> None:
     if random.random() >= individual.mutation_rate:
         return
 
-    operators = ["swap", "inversion", "insertion"]
-    weights = [0.25, 0.55, 0.20]
+    operators = ["swap", "inversion", "insertion", "scramble"]
+    weights   = [0.20, 0.60, 0.15, 0.05]
 
     choice = random.choices(operators, weights=weights, k=1)[0]
 
@@ -571,8 +590,10 @@ def mutation(individual: Individual) -> None:
         mutation_swap(individual.tour)
     elif choice == "inversion":
         mutation_inversion(individual.tour)
-    else:
+    elif choice == "insertion":
         mutation_insertion(individual)
+    else:
+        mutation_scramble(individual.tour)
 
 
 # ==============================================================
