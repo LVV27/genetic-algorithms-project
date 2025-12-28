@@ -49,7 +49,7 @@
 
 %opening
 \title{\vspace{-2cm}Evolutionary Algorithms: \switch{Final}{Retake} report}
-\author{\ReplaceMe{Lowie Van Vyve (r0843621)}}
+\author{Lowie Van Vyve (r0843621)}
 
 \begin{document}
 \fontfamily{ppl}
@@ -57,236 +57,192 @@
 
 \maketitle
 
-\RemoveMe{
-\section*{Formal requirements} \label{sec_this}
-
-The report is structured for fair and efficient grading of around 100 individual projects in the space of only a few days. Please respect the exact structure of this document. You are allowed to remove this section and \cref{sec_other}. Brevity is the soul of wit: a good report will be \textbf{around $8$ pages} long. The hard limit is 10 pages. 
-This \textbf{excludes} the other comments in \cref{sec_other} and the generative AI compliance form in \cref{sec_genai}, which have no page limit.
-
-\begin{quote}
-Think of this report as a \textbf{take-home exam}; it will be used at the exam for structuring the discussion and questions. Make an effort so that it can be visually scanned efficiently, e.g., by using boldface or colors to highlight key points, using lists, clearly defined paragraphs, figures, etc.
-
-You do not need to explain in this report \textbf{how} the techniques and concepts that are literally in the slides work. The goal of this report is \textbf{not} to illustrate that you can reproduce the slides. You need to convince me that you aptly used these (and other) techniques in this project. If I have doubts about your understanding of certain concepts in the course materials, I will test this hypothesis at the exam.
-\end{quote}
-
-It is recommended that you use this \LaTeX{} template, but you are allowed to reproduce it with the same structure in a WYSIWYG-editor. The purple text containing our evaluation criteria can be removed. You should replace the blue text with your discussion.
-
-This report should be uploaded to Toledo by \deadlineReport. It must be in the \textbf{Portable Document Format} (pdf) and must be named \texttt{r0123456\_final.pdf}, where r0123456 should be replaced with your student number.
-
-Remove the current section from your final report.
-}
-
 \section{Metadata}
 
 \begin{itemize}
  \item \textbf{Group members during group phase:} Thomas Borry, Mikhail Chakhovich, and Victor Geneste
  \item \textbf{Time spent on group phase:} 12 hours
  \item \textbf{Time spent on final code:} 35 hours
- \item \textbf{Time spent on final report:} 8 hours
+ \item \textbf{Time spent on final report:} 10 hours
 \end{itemize}
 
 \section{Changes since \switch{the group phase}{your previous submission} \hfill(target: $0.25$ pages)}
 
-\ReplaceMe{List the main changes that you implemented since \switch{the group phase}{your previous submission of the project}. You do not need to explain the employed techniques in detail; for this, you should refer to the appropriate subsection of section 3 of the report.}
-
 \subsection{Changes since the group phase}
-
 \begin{enumerate}
-	\item \ReplaceMe{State here the modification that you made (e.g., replaced top-$\lambda$ selection with $k$-tournament selection).}
-	\item \dots
+  \item Switched from random-only initialization to mixed initialization (multi-start nearest-neighbour greedy seeding + random fill).
+  \item Extended mutation to a weighted portfolio (\texttt{swap}, \texttt{inversion}, \texttt{insertion}, \texttt{scramble}) while keeping self-adaptive per-individual mutation rates.
+  \item Replaced PMX recombination with Order Crossover (OX).
+  \item Replaced $(\lambda+\mu)$ truncation with deterministic crowding for survivor selection to preserve diversity.
+  \item Added Or-opt local search with scheduled application (periodic/top-$k$ refinement).
+  \item Implemented directed edge-overlap similarity (successor representation) to support deterministic crowding rival selection.
+  \item Added sparse-instance handling (sparsity detection + feasibility mask for missing edges).
+  \item Added optional penalty-based handling for $\infty$ edges via a penalized distance matrix (\texttt{USE\_PENALTY\_FOR\_INF}).
 \end{enumerate}
-
-\begin{enumerate}
-	\item Replaced random-only population initialization with a mixed initialization strategy (multi-start nearest-neighbor greedy seeding + random fill) (see Section~3.4).
-	\item Expanded mutation from a single swap operator to a portfolio of operators (swap, inversion, insertion, scramble) with weighted selection, while keeping self-adaptive per-individual mutation rates (see Section~3.6).
-	\item Replaced PMX recombination with Order Crossover (OX) (see Section~3.7).
-	\item Replaced $(\lambda+\mu)$ truncation survivor selection with deterministic crowding to control replacement and preserve niches (see Section~3.8).
-	\item Added an Or-opt local search component and integrated it into the GA (applied on improvements and/or periodically to top-$k$ individuals) (see Section~3.9).
-	\item Added a similarity measure based on directed edge overlap via successor representation to support deterministic crowding rival selection (see Section~3.10).
-	\item Added explicit sparse-instance handling by maintaining a feasibility mask for edges and detecting sparsity in the distance matrix (see Section~3.13).
-	\item Introduced penalty-based constraint handling for missing (Inf) edges by constructing a penalized distance matrix (optional) instead of relying purely on infeasibility rejection (see Section~3.13).
-\end{enumerate}
-
 
 \section{Final design of the evolutionary algorithm \hfill(target: $3.5$ pages)} 
 
-\RemoveMe{\textbf{Goal:} Based on this section, we will evaluate insofar as you are able to design and implement an advanced, effective evolutionary algorithm for solving a model problem.}
-
-
 \subsection{The three main features}
-\ReplaceMe{List the three main components of your evolutionary algorithm for this project. That is, what are its most distinctive characteristics, what components am I not allowed to change to a more basic version? Ideally these are some of the more advanced features that you added since \switch{the group phase}{your previous submission}.}
-
 \begin{enumerate}
-	\item \textbf{Mixed population initialization (greedy + random)} using a nearest-neighbour heuristic to seed a small fraction of the initial population, with the remaining individuals sampled uniformly at random.
-	
-	\item \textbf{Deterministic crowding survivor selection} based on directed edge overlap (successor representation), where each offspring competes with its most similar individual in the current population to preserve diversity.
-	
-	\item \textbf{Memetic refinement via 2-opt local search} applied to improving best solutions (disabled automatically for sparse instances), combining evolutionary search with local improvement.
+  \item \textbf{Mixed population initialization (greedy + random).}
+  A small fraction of the initial population is seeded via multi-start nearest-neighbour greedy tours, with the remainder sampled uniformly at random.
+
+  \item \textbf{Deterministic crowding with edge-based similarity.}
+  Survivor selection is diversity-preserving: each offspring competes only against its closest rival under directed edge overlap (successor representation), preventing rapid population collapse.
+
+  \item \textbf{Memetic refinement via Or-opt local search.}
+  Or-opt is integrated as a periodic refinement step (applied after initialization and then every $N$ generations to top-$k$ individuals), providing strong improvement, especially on sparse large instances.
 \end{enumerate}
 
 \subsection{The main loop}
 
-\ReplaceMe{Make a picture of the ``flow'' in your evolutionary algorithm, similar to the example below. Include all the main components (mutation, recombination, selection, elimination, initialization, local search operators, diversity promotion mechanisms). There are no formal requirements on how to do this, as long as it is clear and you can efficiently explain your complete evolutionary algorithm using this picture at the exam. Contrary to the picture below, include the specific techniques, e.g., top-$\lambda$ elimination, $k$-tournament selection, where possible.}
+% \ReplaceMe{Make a picture of the ``flow'' in your evolutionary algorithm, similar to the example below. Include all the main components (mutation, recombination, selection, elimination, initialization, local search operators, diversity promotion mechanisms). There are no formal requirements on how to do this, as long as it is clear and you can efficiently explain your complete evolutionary algorithm using this picture at the exam. Contrary to the picture below, include the specific techniques, e.g., top-$\lambda$ elimination, $k$-tournament selection, where possible.}
 
-\begin{center}\begin{tikzpicture}
-\draw[->,>=stealth] (0,0) -- (3.1,0);
-\draw[->,>=stealth] (4,0) -- (7.1,2);
-\draw[->,>=stealth] (8,2) -- (8,-1.7);
-\draw[->,>=stealth] (8,-2) -- (4.4,-.3);
-\node[draw,rectangle,thick,fill=white] at (0,0) {Initialization};
-\node[draw,rectangle,thick,fill=white] at (4,0) {Selection};
-\node[draw,rectangle,thick,fill=white] at (8,2) {Variation};
-\node[draw,rectangle,thick,fill=white] at (8,-2) {Evaluation};
-\end{tikzpicture}\end{center}
+% TODO make this picture idk how
 
+% \begin{center}\begin{tikzpicture}
+% \draw[->,>=stealth] (0,0) -- (3.1,0);
+% \draw[->,>=stealth] (4,0) -- (7.1,2);
+% \draw[->,>=stealth] (8,2) -- (8,-1.7);
+% \draw[->,>=stealth] (8,-2) -- (4.4,-.3);
+% \node[draw,rectangle,thick,fill=white] at (0,0) {Initialization};
+% \node[draw,rectangle,thick,fill=white] at (4,0) {Selection};
+% \node[draw,rectangle,thick,fill=white] at (8,2) {Variation};
+% \node[draw,rectangle,thick,fill=white] at (8,-2) {Evaluation};
+% \end{tikzpicture}\end{center}
 
-\RemoveMe{\textbf{The questions from \cref{sec_rep} to \cref{sec_oth} in blue are there to guide which topics to discuss}, rather than an exact list of questions that must be answered. Feel free to add more items to discuss.}
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{assets/main_loop.png}
+	\caption{Overview of the evolutionary algorithm main loop, including initialization, parent selection, recombination and mutation, optional local search, evaluation, diversity promotion, and survivor selection (elimination).}
+	\label{fig:ea-main-loop}
+\end{figure}
+
 
 \subsection{Representation}\label{sec_rep}
 
-\ReplaceMe{How do you represent the candidate solutions? What is your motivation to choose this one? What other options did you consider? How did you implement this specifically in Python (e.g., a list, set, numpy array, etc)?}
+Candidates are represented as a \textbf{permutation} of city indices, i.e., a tour
+$\pi=(\pi_1,\dots,\pi_n)$ visiting each city exactly once; fitness is the total cycle length including the return
+edge to $\pi_1$. This encoding is natural for TSP and works directly with permutation-aware operators (OX,
+inversion, insertion), while enabling efficient evaluation and local modifications (e.g., Or-opt).
 
-Candidate solutions are represented as a \textbf{permutation} of the city indices, i.e.\ a tour
-$\pi = (\pi_1,\dots,\pi_n)$ that visits each city exactly once. The objective value is the total length of the
-Hamiltonian cycle induced by this permutation (including the return edge to the first city).
-
-This representation was chosen because it is the \textbf{natural encoding} for the TSP, guarantees feasibility
-(no duplicated/missing cities) when using permutation-aware operators (e.g.\ OX crossover and inversion-based
-mutations), and allows efficient evaluation and local search (2-opt acts directly on segments of the permutation).
-Alternatives considered were an \textbf{adjacency / successor representation} ($\text{succ}[i]=j$) and
-\textbf{edge-set encodings}; these can simplify overlap/diversity calculations but make crossover and repair
-more involved.
-
-In Python, each tour is stored as a \texttt{numpy.ndarray} of integers (attribute \texttt{Individual.tour}),
-which enables fast slicing/reversal (used by inversion mutation and 2-opt) and supports Numba-accelerated fitness
-evaluation. The deterministic crowding diversity measure additionally builds a temporary successor array
-\texttt{succ} from the permutation for fast directed edge-overlap computation.
+Tours are stored as \texttt{numpy.ndarray} integers (\texttt{Individual.tour}) for fast slicing/reversal and
+Numba-accelerated evaluation. For deterministic crowding, a temporary successor representation
+($\mathrm{succ}[i]=$ next city) is derived from the permutation to compute directed edge overlap.
 
 
 \subsection{Initialization}
 
-\ReplaceMe{How do you initialize the population? How did you determine the number of individuals? Did you implement advanced initialization mechanisms (local search operators, heuristic solutions)? If so, describe them. Do you believe your approach maintains sufficient diversity? How do you ensure that your population enrichment scheme does not immediately take over the population? Did you implement other initialization schemes that did not make it to the final version? Why did you discard them? How did you determine the population size?}
-
 The initial population is created using a \textbf{mixed strategy}: a small fraction
-($\texttt{GREEDY\_FRACTION}\cdot \lambda$) is generated with a \textbf{nearest-neighbour greedy}
-heuristic (multiple random start cities), and the remaining individuals are \textbf{uniformly random
-permutations}. Candidates are evaluated immediately; with \texttt{USE\_PENALTY\_FOR\_INF} enabled, invalid tours receive a large finite penalty (\texttt{INF\_PENALTY\_FACTOR}=10.0) instead of being discarded.
+($\texttt{GREEDY\_FRACTION}\cdot \lambda$) is generated with a \textbf{nearest-neighbour greedy} heuristic
+(multi-start from random cities), and the remaining individuals are \textbf{uniformly random permutations}.
+Candidates are evaluated immediately; with \texttt{USE\_PENALTY\_FOR\_INF} enabled, tours containing missing
+edges receive a large finite penalty ($\texttt{INF\_PENALTY\_FACTOR}=10.0$) rather than being discarded.
 
-The population size is set to $\lambda=100$ as a trade-off under the fixed time budget: larger populations reduce the number of generations (and thus crossover opportunities), while smaller populations lose diversity and converge faster. The greedy component is intentionally kept small (default $\texttt{GREEDY\_FRACTION}=0.01$, i.e., 1 greedy individual for $\lambda=100$) to inject high-quality building blocks without dominating the population; over successive generations, crossover propagates useful edges and the population can approach greedy-like tours even from predominantly random initialization.
+The population size is fixed to $\lambda=100$ as a time-budget trade-off: larger populations reduce the number
+of generations (and thus crossover events), while smaller populations lose diversity and converge faster. The
+greedy seed is intentionally small (default $\texttt{GREEDY\_FRACTION}=0.01$, i.e., 1 individual for
+$\lambda=100$) to provide high-quality building blocks without taking over the population; over generations,
+crossover propagates useful edges into the predominantly random population.
 
 \subsection{Selection operators}
 
-\ReplaceMe{Which selection operators did you implement? If they are not from the slides, describe them. Can you motivate why you chose this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other selection operators not included in the final version? Why did you discard them?}
+Parent selection uses \textbf{$k$-tournament selection}: for each parent, $k$ individuals are sampled uniformly
+at random from the population and the individual with the lowest fitness is selected. This choice is simple,
+efficient, and provides a direct handle on selection pressure.
 
-Parent selection uses \textbf{$k$-tournament selection}: for each parent, $k$ individuals are sampled uniformly at random from the current population and the individual with the lowest fitness is selected. This operator is simple, efficient, and offers a direct control over the trade-off between selection pressure and diversity.
+The main parameter is $\texttt{TOURNAMENT\_K}=7$. This increases early
+exploitation by selecting high-quality individuals (including the greedy seed) more frequently as parents, but
+excessive values risk premature convergence; therefore $\texttt{TOURNAMENT\_K}$ is kept constant (no schedule).
 
-The main parameter is the tournament size $\texttt{TOURNAMENT\_K}=7$. Increasing $\texttt{TOURNAMENT\_K}$ raises selection pressure, promoting early exploitation by selecting high-quality individuals (including the greedy seed) more frequently as parents, which typically yields stronger offspring. However, too large values can reduce diversity and lead to premature convergence; smaller values preserve diversity but slow progress. In the final version, $\texttt{TOURNAMENT\_K}$ is kept constant (no dynamic schedule).
 
 \subsection{Mutation operators}
 
-\ReplaceMe{Which mutation operators did you implement? If they are not from the slides, describe them. How do you choose among several mutation operators? Do you believe it will introduce sufficient randomness? Can that be controlled with parameters? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other mutation operators not included in the final version? Why did you discard them?}
+A \textbf{mutation portfolio} is used for permutation tours: \texttt{swap} (exchange two cities),
+\texttt{inversion} (reverse a segment), \texttt{insertion} (move one city), and \texttt{scramble} (randomly
+permute a segment). When mutation is applied, the operator is sampled by a weighted roulette with probabilities
+0.20, 0.60, 0.15, and 0.05 respectively.
 
-A \textbf{mutation portfolio} is used for permutation tours: \texttt{swap} (exchange two cities), \texttt{inversion}
-(reverse a segment), \texttt{insertion} (move one city), and \texttt{scramble} (randomly permute a segment). When
-mutation is applied, the operator is sampled by a weighted roulette with probabilities 0.20, 0.60, 0.15, and
-0.05 respectively.
+Randomness is controlled by an \textbf{individual-specific mutation rate} $\alpha$: mutation is applied with
+probability $\alpha$, with $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ at initialization and inherited by
+offspring (self-adaptive). No generation-dependent schedule is used.
 
-Randomness is controlled by an \textbf{individual-specific mutation rate} $\alpha$: mutation is applied with probability $\alpha$, with $\alpha \sim U[\alpha_{\min},\alpha_{\max}]$ at initialization and inherited by offspring (self-adaptive). No generation-dependent schedule is used.
+The portfolio increases population-level exploration; mutation rarely improves the elite directly, but it helps
+maintain diversity and introduces new building blocks for crossover.
 
-Compared to single-operator mutation (e.g.\ swap-only), the portfolio maintains higher population-level exploration; while mutation rarely improves the elite directly, it helps sustain diversity and introduces novel building blocks for crossover.
 
 
 \subsection{Recombination operators}
 
-\ReplaceMe{Which recombination operators did you implement? If they are not from the slides, describe them. How do you choose among several recombination operators? Why did you choose these ones specifically? Explain how you believe that these operators can produce offspring that combine the best features from their parents. How does your operator behave if there is little overlap between the parents? Can your recombination be controlled with parameters; what behavior do they change? Do you use self-adaptivity? Do you use any other advanced parameter control mechanisms (e.g., variable across iterations)? Did you try other recombination operators not included in the final version? Why did you discard them? Did you consider recombination with arity strictly greater than 2?}
-
 Recombination uses \textbf{Order Crossover (OX)} for permutation tours. OX copies a random contiguous segment
 from parent 1 into the offspring and fills the remaining positions by scanning parent 2 in order, inserting the
-cities that are not yet present. This preserves a block (subtour fragment) from parent 1 while maintaining
-relative order information from parent 2. Since each city is inserted at most once, OX produces a valid
-\emph{permutation}; the resulting tour is therefore structurally valid, although its objective value can still be
-poor.
+cities that are not yet present. This preserves a block from parent 1 while retaining relative order information
+from parent 2; by construction each city appears exactly once, so the offspring is a valid permutation.
 
-Crossover is applied with probability $\texttt{CROSSOVER\_PROB}=1.0$; this maximizes mixing and helps introduce
-new building blocks into the population under the fixed time budget. Segment boundaries are sampled uniformly
-at random, which implicitly controls disruption (shorter copied segments preserve more of parent 2's order;
-longer segments preserve more of parent 1's block). No self-adaptivity or generation-dependent schedule is used.
+Crossover is applied with probability $\texttt{CROSSOVER\_PROB}=1.0$ to maximize mixing under the fixed time
+budget. Segment boundaries are sampled uniformly at random, controlling disruption (short segments preserve more
+of parent 2's order; long segments preserve more of parent 1's block). No self-adaptivity or schedule is used.
 
-Other permutation crossovers such as PMX were considered, but OX was retained because it is simpler, robust
-(always feasible), and better preserves meaningful ordering information for TSP tours in this implementation.
+PMX and other permutation crossovers were considered, but OX was retained due to its simplicity and robust
+behavior for TSP-style order preservation in this implementation.
 
+
+% elimination is critical!
 
 \subsection{Elimination operators}
-
-\ReplaceMe{Which elimination operators did you implement? If they are not from the slides, describe them. Why did you select this one? Are there parameters that need to be chosen? Did you use an advanced scheme to vary these parameters throughout the iterations? Did you try other elimination operators not included in the final version? Why did you discard them?} 
-
-%% elimination is critical!!
 
 Survivor selection uses \textbf{deterministic crowding}. After offspring are generated, each child competes only
 against its \emph{most similar} individual in the current population (its rival) and replaces it only if it has
 better fitness. Similarity is measured by \textbf{directed edge overlap} using a successor representation
-($\mathrm{succ}[i]$ = next city), i.e., the number of matching directed edges between the two tours; ties are
-broken using closest fitness.
+($\mathrm{succ}[i]$ = next city), i.e., the number of matching directed edges between two tours; ties are broken
+using closest fitness.
 
-This local competition preserves diversity by preventing genetically distant individuals from directly replacing
-each other, so genetic material is less likely to be discarded by global selection. A direct consequence is that
-the population mean can remain much worse than the elite solution, since improvements mainly replace similar
-tours rather than pushing the entire population toward the best.
+This local competition preserves diversity by preventing genetically distant individuals from replacing each
+other, which reduces premature convergence. A direct consequence is that the population mean can remain much
+worse than the elite solution, since improvements mainly replace similar tours rather than pushing the entire
+population toward the best.
 
-Standard \textbf{($\mu+\lambda$) truncation} (selecting the best individuals from parents+offspring) was tested
-earlier, but it increased selection pressure too strongly and caused rapid population collapse, so deterministic
-crowding was retained in the final version.
+Standard \text{($\mu+\lambda$) truncation} was tested earlier, but it increased selection pressure too strongly
+and caused rapid population collapse, so deterministic crowding was retained in the final version.
 
-%% lso also is very critical!!
+
+% lso also is very critical!
 
 \subsection{Local search operators}
 
-\ReplaceMe{What local search operators did you implement? Describe them. Did they cause a significant improvement in the performance of your algorithm? Why (not)? Did you consider other local search operators that did not make the cut? Why did you discard them? Are there parameters that need to be determined in your operator? Do you use an advanced scheme to determine them (e.g., adaptive or self-adaptive)?}
-
-A \textbf{Or-opt} local search is used. Or-opt removes a short consecutive chain of cities and reinserts it
+An \textbf{Or-opt} local search is used. Or-opt removes a short consecutive chain of cities and reinserts it
 elsewhere; improving moves are accepted and repeated for a limited number of iterations. The chain length is
-fixed to $\ell \leq \texttt{OR\_OPT\_MAX\_CHAIN\_LEN}=3$, which provides a good trade-off between move
-expressiveness and cost.
+fixed to $\ell \leq \texttt{OR\_OPT\_MAX\_CHAIN\_LEN}=3$.
 
 Or-opt is computationally demanding, so it is accelerated with \textbf{Numba} and applied sparingly: once
 immediately after initialization, and then every $\texttt{LS\_INTERVAL}=100$ generations to only the top
-$\texttt{LS\_TOP\_K}=1$ individual(s). Besides improving final quality, it typically accelerates progress by
-escaping local minima via targeted reinsertions that crossover and mutation would reach only slowly through many
-small steps. This component is the main driver behind consistently beating the greedy heuristic by a large
-margin: without Or-opt, improvements over the heuristic were still common on dense instances (e.g.\ 50--500
-cities), but on sparse instances (750--1000 cities) the GA often struggled to surpass the heuristic and only
-occasionally found improvements.
+$\texttt{LS\_TOP\_K}=1$ individual(s). It is the main driver for beating the greedy heuristic on sparse instances
+(750--1000 cities): without Or-opt, the GA rarely improves beyond the greedy baseline, whereas on dense instances
+(50--500 cities) improvements are still common.
+
 
 \subsection{Diversity promotion mechanisms}
 
-\ReplaceMe{Did you implement a diversity promotion scheme? If yes, which one? If no, why not? Describe the mechanism you implemented. In what sense does the mechanism improve the performance of your evolutionary algorithm? Are there parameters that need to be determined? Did you use an advanced scheme to determine them?}
+Diversity is promoted via the \textbf{deterministic crowding} survivor selection described above. Similarity is
+computed using directed edge overlap from a successor representation (via \texttt{build\_successor} and
+\texttt{best\_rival\_index\_by\_edge\_overlap}), which is computationally demanding but limits replacement to
+genetically similar tours and reduces premature convergence.
 
-Diversity is primarily maintained by the \textbf{deterministic crowding} survivor selection described in the
-previous subsection. In practice, the diversity mechanism relies on computing tour similarity via the successor
-representation (\texttt{build\_successor}) and selecting rivals by directed edge overlap
-(\texttt{best\_rival\_index\_by\_edge\_overlap}), which is computationally demanding but helps reduce premature
-convergence by limiting competition to genetically similar individuals.
-
-A practical consequence is that the elite solution often converges quickly, while the rest of the population may
-close the gap only later (and sometimes after local search has already produced a strong best solution). No
-additional diversity control or adaptive scheme is used beyond this crowding-based competition.
+As a consequence, the best individual can stabilize quickly while the population mean improves more gradually;
+no additional diversity control or adaptive scheme is used beyond crowding.
 
 
 \subsection{Stopping criterion}
 
-\ReplaceMe{Which stopping criterion did you implement? Did you combine several criteria?}
-
 Termination follows the provided \textbf{time-based} criterion from the template: each generation calls
 \texttt{Reporter.report(...)} and the run stops as soon as the reporter signals that the time limit is reached
 (return value $<0$). No additional stopping conditions are used. Two internal safeguards,
-$\texttt{GENERATIONS}=10{,}000{,}000$ and $\texttt{STALL\_LIMIT}=10{,}000{,}000$, are included for testing to
-avoid unnecessarily long runs when the time limit is not enforced; in the final configuration they are set high
-enough not to trigger before the time limit.
+$\texttt{GENERATIONS}=10{,}000{,}000$ and $\texttt{STALL\_LIMIT}=10{,}000{,}000$, are kept for testing when the
+time limit is not enforced; in the final configuration they are set high enough not to trigger before the time
+limit.
 
 
 \subsection{Parameter selection}
-
-\ReplaceMe{For all of the parameters that are not automatically determined by adaptivity or self-adaptivity (as you have described above), describe how you determined them. Did you perform a hyperparameter search? How did you do this? How did you determine these parameters would be valid both for small and large problem instances?}
 
 Most parameters were chosen by iterative tuning based on observed performance (final objective and convergence
 behavior) under the 5-minute budget. Candidate settings were evaluated across all provided instances, with
@@ -294,8 +250,6 @@ particular emphasis on the larger/sparser cases (750 and 1000 cities), since imp
 harder instances typically also carry over to the smaller/dense ones, whereas the reverse is not always true.
 
 \subsection{Other considerations}\label{sec_oth}
-
-\ReplaceMe{Did you consider other items not listed above, such as elitism, multiobjective optimization strategies (e.g., island model, pareto front approximation), a parallel implementation, or other interesting computational optimizations (e.g. using advanced algorithms or data structures)? You can describe them here or add additional subsections as needed.}
 
 No island-model, multiobjective optimization, or explicit parallelization was implemented; the focus was on
 single-objective performance under the fixed time budget. The main optimization is \textbf{Numba} acceleration
@@ -306,13 +260,7 @@ reaching near C speed.
 
 \section{Numerical experiments \hfill(target: 1.5 pages)}
 
-\RemoveMe{\textbf{Goal:} Based on this section and our execution of your code, we will evaluate the performance (time, quality of solutions) of your implementation and your ability to interpret and explain the results on benchmark problems.}
-
 \subsection{Metadata}
-
-\ReplaceMe{What parameters are there to choose in your evolutionary algorithm? Which fixed parameter values did you use for all experiments below? If some parameters are determined based on information from the problem instance (e.g., number of cities), also report their specific values for the problems below.
-
-Report the main characteristics of the computer system on which you ran your evolutionary algorithm. Include the processor or CPU (including the number of cores and clock speed), the amount of main memory, and the version of Python 3.}
 
 \paragraph{Algorithm parameters (fixed for all experiments).}
 Unless stated otherwise, the following parameter values were used:
@@ -392,14 +340,6 @@ All experiments were executed on:
 
 \subsection{tour50.csv}
 
-\ReplaceMe{Run your algorithm on this benchmark problem (with the 5 minute time limit from the Reporter). \textbf{Include a typical convergence graph, by plotting the mean and best objective values in function of the time} (for example based on the output of the Reporter class).
-
-What is the best tour length you found? What is the corresponding sequence of cities? 
-
-Interpret your results. How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, quality of the best solution, etc)? Is your solution close to the optimal one?
-
-Solve this problem 500 times and record the results. Make a histogram of the final mean fitnessess and the final best fitnesses of the 500 runs. Comment on this figure: is there a lot of variability in the results, what are the means and the standard deviations?}
-
 % INTRODUCE FIGURE
 
 Figure~\ref{fig:tour50_convergence} shows the evolution of the population on \texttt{tour50.csv} during a 5-minute run.
@@ -408,7 +348,7 @@ These curves indicate (i) how quickly good solutions are found and (ii) whether 
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[width=0.95\linewidth]{assets/tour50_convergence.png}
+	\includegraphics[width=0.6\linewidth]{assets/tour50_convergence.png}
 	\caption{Convergence on \texttt{tour50.csv} (5-minute run): mean and best objective values over generations.}
 	\label{fig:tour50_convergence}
 \end{figure}
@@ -456,12 +396,12 @@ Figure~\ref{fig:tour50_hist_final_fitness} shows the distribution of final mean 
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[width=0.95\linewidth]{assets/tour50_hist_final_fitness.png}
+	\includegraphics[width=0.6\linewidth]{assets/tour50_hist_final_fitness.png}
 	\caption{Distribution over 500 runs on \texttt{tour50.csv} (5-minute limit): histograms of final mean fitness and final best fitness.}
 	\label{fig:tour50_hist_final_fitness}
 \end{figure}
 
-DISCUSS RESULTS
+% DISCUSS RESULTS
 
 % STATISTICAL SUMMARY
 % Metric: Mean Fitness,Best Fitness
@@ -480,11 +420,6 @@ The final best fitness is tightly clustered, suggesting that most runs converge 
 
 
 \subsection{tour250.csv}\label{sec_shorttour}
-\ReplaceMe{Run your algorithm on this benchmark problem (with the 5 minute time limit from the Reporter). \textbf{Include a typical convergence graph, by plotting the mean and best objective values in function of the time} (for example based on the output of the Reporter class).
-
-What is the best tour length you found in each case? 
-
-Interpret your results. How do you rate the performance of your algorithm (time, memory, speed of convergence, diversity of population, quality of the best solution, etc)? Is your solution close to the optimal one?}
 
 % INTRODUCE FIGURE
 
@@ -494,7 +429,7 @@ highlighting the speed of improvement and the onset of stagnation.
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[width=0.95\linewidth]{assets/tour250_convergence.png}
+	\includegraphics[width=0.6\linewidth]{assets/tour250_convergence.png}
 	\caption{Convergence on \texttt{tour250.csv} (5-minute run): mean and best objective values over generations.}
 	\label{fig:tour250_convergence}
 \end{figure}
@@ -531,9 +466,7 @@ The improvement is driven by exploitation of the greedy-seeded individual and su
 
 \subsection{tour1000.csv}
 
-\ReplaceMe{Answer the same questions as in \cref{sec_shorttour}.}
-
-INTRODUCE FIGURE
+% INTRODUCE FIGURE
 
 Figure~\ref{fig:tour1000_convergence} shows the evolution of the population on \texttt{tour1000.csv} during a 5-minute run.
 Both the best objective value (elite individual) and the mean objective value (population average) are reported over the generations,
@@ -541,12 +474,12 @@ highlighting the speed of improvement and the onset of stagnation.
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[width=0.95\linewidth]{assets/tour1000_convergence.png}
+	\includegraphics[width=0.6\linewidth]{assets/tour1000_convergence.png}
 	\caption{Convergence on \texttt{tour1000.csv} (5-minute run): mean and best objective values over generations.}
 	\label{fig:tour1000_convergence}
 \end{figure}
 
-DISCUSS RESULTS
+% DISCUSS RESULTS
 
 % INITIALIZATION
 % Initialized 100 individuals (1 greedy, 99 random)
@@ -575,10 +508,7 @@ The improvement is driven by exploitation of the greedy-seeded individual and, i
 
 \section{Critical reflection \hfill(target: $1.5$ page)}
 
-\RemoveMe{\textbf{Goal:} Based on this section, we will evaluate your understanding and insight into the main strengths and weaknesses of evolutionary algorithms, as well as your insights into responsible genAI usage.}
-
 \subsection{Strengths and weaknesses}
-\ReplaceMe{What are the three main strengths of evolutionary algorithms in your experience?}
 
 \begin{enumerate}
   \item \textbf{Initialization}
@@ -595,8 +525,6 @@ The improvement is driven by exploitation of the greedy-seeded individual and, i
 
 \end{enumerate}
 
-\ReplaceMe{What are the three main weak points of evolutionary algorithms in your experience?}
-
 \begin{enumerate}
   \item \textbf{Sensitivity on sparse instances.}
   On sparse graphs (e.g., \texttt{tour1000}), improvements become rare and beating the greedy baseline reliably often requires strong local search (Or-opt), indicating a tendency to rely on intensification when the feasible search space is constrained.
@@ -607,8 +535,6 @@ The improvement is driven by exploitation of the greedy-seeded individual and, i
   \item \textbf{Stagnation and basin trapping.}
   Once a strong basin is found, the best solution can plateau for long periods, and escaping to a better optimum becomes unlikely without additional mechanisms.
 \end{enumerate}
-
-\ReplaceMe{Describe the main lessons learned from this project. Do you believe evolutionary algorithms are appropriate for the problem studied in this project? Why (not)? What surprised you and why? What did you learn from this project?}
 
 In practice, it can be difficult to attribute improvements to specific components (selection pressure, crossover,
 mutation, local search, or elimination), since multiple mechanisms interact simultaneously. Detailed logging and
@@ -627,54 +553,113 @@ Genetic algorithms remain valuable when strong problem-specific solvers are unav
 instances matters, or when good solutions are needed under a strict time budget.
 
 \subsection{GenAI peer reviewing critical reflection} 
-\ReplaceMe{What are the strengths and weaknesses of the AI-generated peer review compared to the human-written one? Did Copilot identify issues the humans missed, or vice versa? Why do you think this happened? Was Copilot's review at all useful? Was it specific and concrete or rather vague and general? What is your view towards reviewing reports using generative AI? Would you want to be reviewed by an AI system or by a human? Why? Did writing your own review help you understand the other group's algorithm better than reading the AI’s version? How might relying too much on AI affect your ability to critically evaluate scientific work in the future? In what ways can AI be a helpful tool in peer review? In what ways can it be harmful?}
+
+The AI-generated review was generally well-written at the surface level (e.g., fewer spelling/grammar issues),
+but it tended to remain generic and high-level, with limited concrete, context-specific critique compared to the
+human review. This likely follows from limited domain understanding: plausible-sounding feedback is easy to
+generate, while identifying subtle methodological issues requires strong technical grounding and careful reading.
+
+Overall, the AI review was only mildly useful as a checklist-style assistant (structure, clarity, missing items),
+but not as a reliable evaluator of algorithmic correctness or experimental rigor. Peer review should primarily be
+performed by knowledgeable humans; generative AI can support this process, but relying on it for critical
+judgement risks accepting confident yet shallow or incorrect feedback and can weaken long-term critical thinking
+skills.
 
 \subsection{GenAI critical reflection}
-\ReplaceMe{In what ways did generative AI help you during the project? In what ways did it hinder your learning or understanding?
-Briefly describe for which activities you believe genAI added value:
-\begin{enumerate}
- \item 
- \item
- \item
-\end{enumerate}
-For which activities did you not observe any or sufficient added value:
-\begin{enumerate}
- \item 
- \item
- \item
-\end{enumerate}
-}
 
-\ReplaceMe{Would your project solution have been substantially different without relying on genAI? In what aspects? Why? How much time did you gain or lose by relying on genAI? If you did not substantially employ genAI: motivate why did you not use it.}
+Generative AI was mainly useful as a productivity tool, but its output still required careful verification and
+domain judgement.
 
+\paragraph{Activities where genAI added value.}
+\begin{enumerate}
+  \item \textbf{Writing support:} restructuring rough notes into clearer, more concise report-ready text.
+  \item \textbf{Implementation assistance:} drafting boilerplate code for standard operators/utility functions, followed by manual verification and debugging.
+  \item \textbf{Idea generation:} suggesting alternative operators or design directions when stuck, serving as a starting point for further investigation.
+\end{enumerate}
+
+\paragraph{Activities where genAI added little or no value.}
+\begin{enumerate}
+  \item \textbf{Deep algorithm design decisions:} complex EA behavior is highly context-dependent, and suggestions were often generic or misaligned with the actual failure mode.
+  \item \textbf{Correctness reasoning:} outputs can sound confident while being subtly wrong, requiring thorough checking to avoid introducing bugs or invalid assumptions.
+  \item \textbf{Scientific judgement:} interpreting results, identifying true bottlenecks, and deciding what to change remained primarily a human task.
+\end{enumerate}
+
+Without genAI, the final solution would likely not be fundamentally different in terms of the chosen algorithmic
+components, but producing a polished deliverable (clean report text and implementation scaffolding) would have
+been slower. The main impact was on speed and iteration: genAI helped draft report sections, generate initial
+code versions for standard operators, and propose directions to explore when stuck. The time gain came primarily
+from reducing repetitive work (rewriting, boilerplate coding, and quick idea generation), while the remaining
+effort still required manual debugging, validation, and experimental evaluation to ensure correctness and
+performance. Using genAI effectively is also a skill in itself: good results required precise prompting,
+providing sufficient context, and critically filtering and verifying the output rather than accepting it
+verbatim.
 
 \clearpage
 \section{Other comments \hfill(does not count toward page limit)} \label{sec_other}
 
-\ReplaceMe{In case there is something important to discuss that is not covered by the previous sections, you can do it here. }
+No additional comments.
 
 \section{Generative AI compliance form \hfill(does not count toward page limit)} \label{sec_genai}
 
-\RemoveMe{For \textbf{each instance} of a genAI activity that required reporting (generating ideas and code), fill out the following information. You do not need to provide this information for the unconditionally approved uses of genAI.}
+\subsection{Mutation portfolio implementation with configurable operator weights}
 
-\subsection{Example activity} \ReplaceMe{Briefly describe the activity for which you employed GenAI. For example: ``Code skeleton generation for a recombination operator of permutations.'' Give the subsection an informative title.}
+\paragraph{Generative AI model:} ChatGPT 5.2 Thinking.
 
-\paragraph{Generative AI model:} \ReplaceMe{Identify the GenAI model used for this activity. For example, Microsoft Copilot, OpenAI ChatGPT v4, Midjourney, etc.}
-
-\paragraph{Motivation:} \ReplaceMe{Describe the intention and reason for employing generative AI for this activity.}
-
-\paragraph{Methodology:} \ReplaceMe{List the exact prompts you used to generate the content. You do not need to include the model's response.}
-
-\paragraph{Postprocessing:} \ReplaceMe{Describe which postprocessing you applied to the generated content. For example, ``the output was used verbatim,'' ``the output contained basic programming errors (undefined variables, undefined functions), which I corrected by hand,'' ``I rewrote/removed/expanded one/a few/some/most/all sentences to [purpose],'' ``The generated content contained interesting ideas for a recombination operator, suggesting in particular to [do it in such and such way]. However, this idea would have been computationally very expensive, so I simplified [this and that], using [advanced data structure] to obtain an efficient variant of the generated idea.''}
-
-\paragraph{Reflection:} \ReplaceMe{Critically reflect on the output generated and describe what you learned and in which aspects the result was useful and in which aspects it was not useful.}
-
-
-\subsection{Another example activity} 
-\paragraph{Generative AI model:}
 \paragraph{Motivation:}
+Consolidating multiple permutation mutation operators into a single clean interface with configurable roulette
+weights, reducing boilerplate and improving maintainability.
+
 \paragraph{Methodology:}
+Exact prompts used:
+\begin{lstlisting}
+lets say i have
+def mutation_swap(tour: np.ndarray) -> None:
+    """Swap two random cities in-place."""
+    i, j = random.sample(range(len(tour)), 2)
+    tour[i], tour[j] = tour[j], tour[i]
+
+def mutation_inversion(tour: np.ndarray) -> None:
+    """Reverse a random contiguous segment in-place."""
+    start, end = sorted(random.sample(range(len(tour)), 2))
+    tour[start : end + 1] = tour[start : end + 1][::-1]
+
+but i want to have a single mutation function
+can you help me implement this
+i want the weights to be configurable, keep it clean and understandable
+\end{lstlisting}
+
 \paragraph{Postprocessing:}
-\paragraph{Reflection:} 
+The generated output was adapted to the existing codebase (data structures, naming, and interfaces) rather than
+used verbatim. In several cases, starting a fresh chat was necessary when the conversation became too broad and
+the responses drifted away from the intended context. Providing sufficient codebase context was important:
+without it, the model tended to suggest solutions that were already implemented differently or incompatible with
+the current design, requiring manual refactoring and validation.
+
+
+\paragraph{Reflection:}
+It was useful for quickly recalling Python-specific language features and standard-library patterns, reducing time
+spent searching documentation. However, prompts had to be very specific: vague problem descriptions often led to
+overly broad or irrelevant suggestions that required filtering and correction.
+
+\subsection{Polishing informal draft text for the discussion section}
+
+\paragraph{Generative AI model:} ChatGPT 5.2 Thinking.
+
+\paragraph{Motivation:} I found it most efficient to draft my ideas freely in my own words and then use AI to refine the phrasing and structure, followed by my own review.
+\paragraph{Methodology:}
+Exact prompts used:
+\begin{lstlisting}
+sometimes it is hard to know where the changes are actually comming from, and loggin can help to better understand what your algothim is doing, sometimes you can get lost focussing on improving the best only but you have to keep in mind this is a genetic first project, not a best solver method project
+
+also paramters can be very sensitive for your algorithm, it is also dependent on the problem instance (like sparsity and tour lenth) so you always have to check if you are still doing well in the other problem instances aswell
+
+appropriate depends on what you mean by appropriate, i think it is a good tool to find good solutions better than the greedy heuristic especially on dense graphs if finding the global optimum can use better more specific solver for this, but the application of genetic does have its place
+
+can you write these words in a report style
+\end{lstlisting}
+\paragraph{Postprocessing:}
+I reviewed the generated text and edited it for clarity.
+\paragraph{Reflection:}
+The generated output was often useful, but it occasionally introduced minor quirks or awkward phrasing that required manual correction.
 
 \end{document}
