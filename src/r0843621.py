@@ -568,9 +568,9 @@ def mutation_scramble(tour: np.ndarray) -> None:
     start = random.randint(0, n - k)
     end = start + k - 1
 
-    segment = tour[start:end + 1].copy()
+    segment = tour[start : end + 1].copy()
     np.random.shuffle(segment)
-    tour[start:end + 1] = segment
+    tour[start : end + 1] = segment
 
 
 def mutation(individual: Individual) -> None:
@@ -582,7 +582,7 @@ def mutation(individual: Individual) -> None:
         return
 
     operators = ["swap", "inversion", "insertion", "scramble"]
-    weights   = [0.20, 0.60, 0.15, 0.05]
+    weights = [0.20, 0.60, 0.15, 0.05]
 
     choice = random.choices(operators, weights=weights, k=1)[0]
 
@@ -1214,7 +1214,7 @@ def edge_diversity(population: List[Individual]) -> float:
 
 
 def count_vs_heuristic(
-    population: List[Individual], heuristic: float, within_pct: float = 0.15
+    population: List[Individual], heuristic: Optional[float], within_pct: float = 0.15
 ) -> Tuple[int, int]:
     """
     Count solutions better than or near heuristic benchmark.
@@ -1222,6 +1222,9 @@ def count_vs_heuristic(
     Returns:
         (solutions_beating_heuristic, solutions_within_threshold)
     """
+    if heuristic is None or not np.isfinite(heuristic):
+        return 0, 0
+
     beat = 0
     within = 0
     thresh = (1.0 + within_pct) * heuristic
